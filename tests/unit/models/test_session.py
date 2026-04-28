@@ -10,7 +10,6 @@ import pytest
 
 from gameplay_recorder.models.session import RecordingState, SessionMeta
 
-
 # ---------------------------------------------------------------------------
 # SessionMeta
 # ---------------------------------------------------------------------------

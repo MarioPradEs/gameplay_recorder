@@ -1,7 +1,8 @@
 """Tests for RawTouchEvent dataclass — RED phase.
 
 Spec: Requirement "Raw Touch Event Capture"
-  - Each event: ts (float), type (str in {touch_down, touch_move, touch_up}), x (int), y (int), slot (int).
+  - Each event: ts (float), type (str in {touch_down, touch_move, touch_up}),
+    x (int), y (int), slot (int).
   - No additional fields.
 """
 
