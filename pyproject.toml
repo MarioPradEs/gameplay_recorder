@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gameplay-recorder"
+version = "0.1.0"
+description = "Public GUI for recording Android gameplay sessions for ML training datasets"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.12"
+dependencies = [
+    "PySide6>=6.6",
+    "adbutils>=0.14,<1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-qt",
+    "pytest-asyncio",
+    "ruff",
+]
+
+[project.scripts]
+gameplay-recorder = "gameplay_recorder.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "gui: GUI tests requiring a display (deselect with -m 'not gui')",
+    "e2e: End-to-end tests requiring a real device (deselect with -m 'not e2e')",
+]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]

@@ -1,0 +1,42 @@
+# Python
+build/
+dist/
+*.egg-info/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ruff_cache/
+*.pyi
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# PyInstaller build artifacts
+*.spec.lock
+installer/build/
+installer/dist/
+
+# Bundled binaries (fetched in CI, not committed)
+resources/ffmpeg/*
+!resources/ffmpeg/.gitkeep
+
+# Environment files
+.env
+.env.local
+.env.*.local
