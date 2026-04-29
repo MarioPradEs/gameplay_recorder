@@ -9,6 +9,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from gameplay_recorder.adb.connection import AdbConnection
+
 # ---------------------------------------------------------------------------
 # Task 6.1 – test_screenshot_filename_zero_padded
 # ---------------------------------------------------------------------------
@@ -58,7 +60,7 @@ def test_default_interval_is_5s():
     """
     from gameplay_recorder.capture.screenshot_capture import ScreenshotCapture
 
-    mock_conn = MagicMock()
+    mock_conn = MagicMock(spec=AdbConnection)
     cap = ScreenshotCapture(adb_conn=mock_conn, session_dir=Path("/tmp/s"))
     assert cap.interval_s == 5
 
@@ -78,7 +80,7 @@ def test_screenshot_count_approx_30s_session():
     """
     from gameplay_recorder.capture.screenshot_capture import ScreenshotCapture
 
-    mock_conn = MagicMock()
+    mock_conn = MagicMock(spec=AdbConnection)
     mock_conn.screencap.return_value = b"\x89PNG\r\n\x1a\n"  # minimal PNG bytes
 
     session_dir = Path("/tmp/screenshots_test")
@@ -111,7 +113,7 @@ def test_custom_interval_honored():
     """
     from gameplay_recorder.capture.screenshot_capture import ScreenshotCapture
 
-    mock_conn = MagicMock()
+    mock_conn = MagicMock(spec=AdbConnection)
     cap = ScreenshotCapture(adb_conn=mock_conn, session_dir=Path("/tmp/s"), interval_s=10)
     assert cap.interval_s == 10
 
@@ -128,7 +130,7 @@ def test_screenshot_filenames_sequential():
     """
     from gameplay_recorder.capture.screenshot_capture import ScreenshotCapture
 
-    mock_conn = MagicMock()
+    mock_conn = MagicMock(spec=AdbConnection)
     mock_conn.screencap.return_value = b"\x89PNG\r\n\x1a\n"
     session_dir = Path("/tmp/seq_test")
 
@@ -163,7 +165,7 @@ def test_screenshots_property_returns_correct_paths():
     """
     from gameplay_recorder.capture.screenshot_capture import ScreenshotCapture
 
-    mock_conn = MagicMock()
+    mock_conn = MagicMock(spec=AdbConnection)
     mock_conn.screencap.return_value = b"\x89PNG\r\n\x1a\n"
     session_dir = Path("/tmp/prop_test")
 
@@ -199,7 +201,7 @@ def test_take_screenshot_creates_parent_dir(tmp_path):
     session_dir = tmp_path / "new_session"
     # session_dir does NOT exist yet — _take_screenshot must create it
 
-    mock_conn = MagicMock()
+    mock_conn = MagicMock(spec=AdbConnection)
     mock_conn.screencap.return_value = b"\x89PNG\r\n\x1a\n"
 
     cap = ScreenshotCapture(adb_conn=mock_conn, session_dir=session_dir, interval_s=5)

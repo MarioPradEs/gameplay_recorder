@@ -17,6 +17,7 @@ from __future__ import annotations
 import threading
 from unittest.mock import MagicMock
 
+from gameplay_recorder.adb.connection import AdbConnection
 from gameplay_recorder.capture.event_monitor import TouchEventMonitor
 from gameplay_recorder.models.touch_event import RawTouchEvent
 
@@ -24,8 +25,13 @@ from gameplay_recorder.models.touch_event import RawTouchEvent
 
 
 def _make_adb_connection(lines: list[str]) -> MagicMock:
-    """Return a mock AdbConnection whose shell_stream yields the given lines."""
-    conn = MagicMock()
+    """Return a spec=AdbConnection mock whose shell_stream yields the given lines.
+
+    Using MagicMock(spec=AdbConnection) ensures that any call to a method that
+    does NOT exist on AdbConnection raises AttributeError immediately — catching
+    API drift (e.g. if event_monitor tried to call a non-existent method).
+    """
+    conn = MagicMock(spec=AdbConnection)
     conn.shell_stream.return_value = iter(lines)
     # shell() used by detect_touch_device — return empty string by default
     conn.shell.return_value = ""

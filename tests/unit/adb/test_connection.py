@@ -157,18 +157,25 @@ class TestSelectSingleDevice:
 
 class TestScreencap:
     def test_screencap_returns_png_bytes(self) -> None:
+        """screencap() returns the raw bytes from the device socket.
+
+        The real API: AdbDevice.shell("screencap -p", stream=True) returns an
+        adbutils.AdbConnection with a .conn socket. We read chunks until EOF.
+        """
         fake_png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 20
 
-        with patch("gameplay_recorder.adb.connection.adbutils") as mock_adb:
-            mock_client = MagicMock()
-            mock_adb_device = MagicMock()
-            mock_adb_device.shell.return_value = fake_png
-            mock_client.device.return_value = mock_adb_device
-            mock_adb.AdbClient.return_value = mock_client
+        # Build a mock that simulates AdbDevice.shell(stream=True) → socket → bytes
+        fake_socket = MagicMock()
+        fake_socket.recv.side_effect = [fake_png, b""]  # data then EOF
+        fake_adb_conn = MagicMock()
+        fake_adb_conn.conn = fake_socket
 
-            conn = AdbConnection(serial="test-device")
-            conn._adb_device = mock_adb_device
-            result = conn.screencap()
+        mock_adb_device = MagicMock()
+        mock_adb_device.shell.return_value = fake_adb_conn
+
+        conn = AdbConnection(serial="test-device")
+        conn._adb_device = mock_adb_device
+        result = conn.screencap()
 
         assert isinstance(result, bytes)
         assert result == fake_png
@@ -177,37 +184,46 @@ class TestScreencap:
 # ─── shell_stream ────────────────────────────────────────────────────────────
 
 
+def _make_shell_stream_mock(lines: list[bytes]) -> MagicMock:
+    """Build a mock adbutils.AdbDevice whose shell(stream=True) returns a fake socket.
+
+    The fake socket's recv() returns each line in sequence, then b"" to signal EOF.
+    This matches the real adbutils._adb.AdbConnection.conn interface.
+    """
+    # Build recv side_effect: return each chunk then b"" for EOF
+    chunks = list(lines) + [b""]
+    fake_socket = MagicMock()
+    fake_socket.recv.side_effect = chunks
+
+    fake_adb_conn = MagicMock()
+    fake_adb_conn.conn = fake_socket
+
+    mock_device = MagicMock()
+    mock_device.shell.return_value = fake_adb_conn
+    return mock_device
+
+
 class TestShellStream:
     def test_shell_stream_yields_lines_until_terminated(self) -> None:
         fake_lines = [
-            b"[ 1234.567] /dev/input/event3: EV_ABS  ABS_MT_TRACKING_ID  00000001",
-            b"[ 1234.568] /dev/input/event3: EV_SYN  SYN_REPORT           00000000",
+            b"[ 1234.567] /dev/input/event3: EV_ABS  ABS_MT_TRACKING_ID  00000001\n",
+            b"[ 1234.568] /dev/input/event3: EV_SYN  SYN_REPORT           00000000\n",
         ]
 
-        with patch("gameplay_recorder.adb.connection.adbutils") as mock_adb:
-            mock_client = MagicMock()
-            mock_adb_device = MagicMock()
-            mock_adb_device.shell_stream.return_value = iter(fake_lines)
-            mock_client.device.return_value = mock_adb_device
-            mock_adb.AdbClient.return_value = mock_client
+        mock_adb_device = _make_shell_stream_mock(fake_lines)
 
-            conn = AdbConnection(serial="test-device")
-            conn._adb_device = mock_adb_device
-            result = list(conn.shell_stream("getevent -lt /dev/input/event3"))
+        conn = AdbConnection(serial="test-device")
+        conn._adb_device = mock_adb_device
+        result = list(conn.shell_stream("getevent -lt /dev/input/event3"))
 
         assert result == fake_lines
 
     def test_shell_stream_returns_iterator(self) -> None:
-        with patch("gameplay_recorder.adb.connection.adbutils") as mock_adb:
-            mock_client = MagicMock()
-            mock_adb_device = MagicMock()
-            mock_adb_device.shell_stream.return_value = iter([])
-            mock_client.device.return_value = mock_adb_device
-            mock_adb.AdbClient.return_value = mock_client
+        mock_adb_device = _make_shell_stream_mock([])
 
-            conn = AdbConnection(serial="test-device")
-            conn._adb_device = mock_adb_device
-            result = conn.shell_stream("getevent -lt")
+        conn = AdbConnection(serial="test-device")
+        conn._adb_device = mock_adb_device
+        result = conn.shell_stream("getevent -lt")
 
         # Must be an iterator/generator
         assert hasattr(result, "__iter__")
@@ -278,14 +294,14 @@ class TestEdgeCases:
 
     def test_screencap_raises_adb_command_error_on_failure(self) -> None:
         """screencap() must wrap underlying exceptions in AdbCommandError."""
-        with patch("gameplay_recorder.adb.connection.adbutils"):
-            conn = AdbConnection(serial="test")
-            mock_device = MagicMock()
-            mock_device.shell.side_effect = RuntimeError("device disconnected")
-            conn._adb_device = mock_device
+        conn = AdbConnection(serial="test")
+        mock_device = MagicMock()
+        # shell() raises — e.g. device went offline
+        mock_device.shell.side_effect = RuntimeError("device disconnected")
+        conn._adb_device = mock_device
 
-            with pytest.raises(AdbCommandError):
-                conn.screencap()
+        with pytest.raises(AdbCommandError):
+            conn.screencap()
 
     def test_list_devices_returns_empty_list_when_adbutils_unavailable(self) -> None:
         """list_devices must return [] gracefully when adbutils is None."""
@@ -397,3 +413,215 @@ class TestAdbClientSpecChecked:
             ):
                 with pytest.raises(NoDeviceConnectedError):
                     AdbConnection.select_single_device()
+
+
+# ─── Regression: C1 — AdbConnection.shell() must exist ──────────────────────
+
+
+class TestAdbConnectionShell:
+    """Regression tests for C1: AdbConnection.shell() was missing.
+
+    video_recorder.py calls adb_conn.shell("df /sdcard") and
+    adb_conn.shell("rm -f <path>"). Without this method both calls raise
+    AttributeError at runtime, but plain MagicMock() silently accepts them.
+
+    These tests use MagicMock(spec=AdbConnection) so that any call to a
+    non-existent method raises AttributeError — exactly what happened in prod.
+    """
+
+    def test_adb_connection_has_shell_method(self) -> None:
+        """AdbConnection must expose a shell() method (C1 regression)."""
+        assert hasattr(AdbConnection, "shell"), (
+            "AdbConnection.shell() is missing — video_recorder.py will AttributeError at runtime"
+        )
+        assert callable(getattr(AdbConnection, "shell")), "AdbConnection.shell must be callable"
+
+    def test_shell_returns_string(self) -> None:
+        """shell() must return a str (delegates to adbutils AdbDevice.shell)."""
+        mock_device = MagicMock()
+        mock_device.shell.return_value = "hello from device"
+
+        conn = AdbConnection(serial="test-serial")
+        conn._adb_device = mock_device
+
+        result = conn.shell("echo hello")
+
+        assert isinstance(result, str)
+        assert result == "hello from device"
+        mock_device.shell.assert_called_once_with("echo hello")
+
+    def test_shell_raises_adb_command_error_on_failure(self) -> None:
+        """shell() wraps underlying exceptions in AdbCommandError."""
+        mock_device = MagicMock()
+        mock_device.shell.side_effect = RuntimeError("device offline")
+
+        conn = AdbConnection(serial="test-serial")
+        conn._adb_device = mock_device
+
+        with pytest.raises(AdbCommandError):
+            conn.shell("df /sdcard")
+
+    def test_shell_raises_when_no_device_connected(self) -> None:
+        """shell() raises AdbCommandError if called without a device handle."""
+        conn = AdbConnection(serial="test-serial")
+        # _adb_device is None by default
+
+        with pytest.raises(AdbCommandError):
+            conn.shell("echo hello")
+
+    def test_spec_checked_mock_rejects_missing_shell_method(self) -> None:
+        """MagicMock(spec=AdbConnection) must HAVE shell() after the fix.
+
+        Before the fix: AdbConnection had no shell() — this mock would reject
+        any call to .shell() with AttributeError.
+        After the fix: shell() exists — mock allows the call.
+        """
+        mock_conn = MagicMock(spec=AdbConnection)
+        # After the fix, this must not raise AttributeError:
+        mock_conn.shell.return_value = "some output"
+        result = mock_conn.shell("df /sdcard")
+        assert result == "some output"
+
+
+# ─── Regression: C2 — screencap() must use correct adbutils API ─────────────
+
+
+class TestScreencapCorrectApi:
+    """Regression tests for C2: screencap used shell("screencap -p", encoding=None).
+
+    Real adbutils 0.16.2 AdbDevice.shell() signature:
+        shell(cmdargs, stream=False, timeout=None, rstrip=True)
+    NO 'encoding' parameter — passing encoding=None raises TypeError.
+    Furthermore shell() returns str by default, not bytes.
+
+    Correct approach: use shell("screencap -p", stream=True) and read raw bytes
+    from the returned AdbConnection socket.
+    """
+
+    def _make_screencap_mock(self, png_bytes: bytes) -> MagicMock:
+        """Build an AdbDevice mock where shell(stream=True) returns a socket with PNG data.
+
+        Uses plain MagicMock (not spec=AdbDevice) to avoid pytest-asyncio hang.
+        The stream=True API contract is validated in the test assertions.
+        """
+        fake_socket = MagicMock()
+        # Return PNG data in chunks then b"" for EOF
+        fake_socket.recv.side_effect = [png_bytes, b""]
+
+        fake_adb_conn = MagicMock()
+        fake_adb_conn.conn = fake_socket
+
+        mock_device = MagicMock()
+        mock_device.shell.return_value = fake_adb_conn
+        return mock_device
+
+    def test_screencap_does_not_pass_encoding_kwarg(self) -> None:
+        """screencap() must NOT call _adb_device.shell(encoding=None).
+
+        Uses spec= mock to guard against wrong kwargs.
+        """
+        fake_png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 20
+        mock_device = self._make_screencap_mock(fake_png)
+
+        conn = AdbConnection(serial="test-serial")
+        conn._adb_device = mock_device
+
+        result = conn.screencap()
+
+        # Must return bytes
+        assert isinstance(result, bytes), f"screencap() must return bytes, got {type(result)}"
+        # Must NOT call shell with encoding= kwarg
+        call_kwargs = mock_device.shell.call_args.kwargs if mock_device.shell.call_args else {}
+        assert "encoding" not in call_kwargs, (
+            "screencap() must not pass 'encoding=' to AdbDevice.shell() — "
+            "that parameter does not exist in adbutils 0.16.2"
+        )
+
+    def test_screencap_uses_stream_true(self) -> None:
+        """screencap() must call _adb_device.shell(..., stream=True) for binary data."""
+        fake_png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 20
+        mock_device = self._make_screencap_mock(fake_png)
+
+        conn = AdbConnection(serial="test-serial")
+        conn._adb_device = mock_device
+
+        conn.screencap()
+
+        # Must call shell with stream=True
+        mock_device.shell.assert_called_once()
+        call_kwargs = mock_device.shell.call_args.kwargs
+        call_args = mock_device.shell.call_args.args
+        # stream=True must appear either as kwarg or positional arg[1]
+        stream_passed = call_kwargs.get("stream") or (len(call_args) > 1 and call_args[1] is True)
+        assert stream_passed, (
+            "screencap() must call AdbDevice.shell(cmd, stream=True) to get binary PNG bytes"
+        )
+
+
+# ─── Regression: C3 — shell_stream() must use shell(stream=True) ─────────────
+
+
+class TestShellStreamCorrectApi:
+    """Regression tests for C3: shell_stream called _adb_device.shell_stream(cmd).
+
+    AdbDevice has NO shell_stream() method in adbutils 0.16.2.
+    Correct API: shell(cmd, stream=True) → returns adbutils.AdbConnection (socket).
+
+    NOTE: We use plain MagicMock() here (not spec=AdbDevice) because
+    MagicMock(spec=AdbDevice) triggers a hang in pytest-asyncio auto mode
+    due to how pytest-asyncio inspects class attributes for coroutine detection.
+    The assertion that shell_stream() is never called serves as the real guard.
+    """
+
+    def test_shell_stream_does_not_call_nonexistent_shell_stream_method(self) -> None:
+        """shell_stream() must NOT call _adb_device.shell_stream().
+
+        Before the fix: code called _adb_device.shell_stream(cmd) — a method that
+        does NOT exist on adbutils.AdbDevice 0.16.2 and raises AttributeError.
+        After the fix: code calls _adb_device.shell(cmd, stream=True).
+
+        We assert that .shell_stream was NEVER called on the device mock.
+        """
+        # Build a socket that returns data then EOF
+        fake_socket = MagicMock()
+        fake_socket.recv.side_effect = [b"line1\n", b"line2\n", b""]
+        fake_adb_conn = MagicMock()
+        fake_adb_conn.conn = fake_socket
+
+        mock_device = MagicMock()
+        mock_device.shell.return_value = fake_adb_conn
+
+        conn = AdbConnection(serial="test-serial")
+        conn._adb_device = mock_device
+
+        result = list(conn.shell_stream("getevent -lt /dev/input/event3"))
+        assert result == [b"line1\n", b"line2\n"]
+
+        # shell_stream must NEVER be called on the underlying device (it doesn't exist)
+        assert not mock_device.shell_stream.called, (
+            "AdbDevice has no shell_stream() method — must use shell(cmd, stream=True). "
+            "shell_stream() was called on the device mock!"
+        )
+        assert mock_device.shell.call_count == 1, "Must call shell() exactly once"
+
+    def test_shell_stream_calls_shell_with_stream_true(self) -> None:
+        """shell_stream() must call _adb_device.shell(cmd, stream=True)."""
+        # Build a socket that immediately signals EOF
+        fake_socket = MagicMock()
+        fake_socket.recv.side_effect = [b""]
+        fake_adb_conn = MagicMock()
+        fake_adb_conn.conn = fake_socket
+
+        mock_device = MagicMock()
+        mock_device.shell.return_value = fake_adb_conn
+
+        conn = AdbConnection(serial="test-serial")
+        conn._adb_device = mock_device
+
+        list(conn.shell_stream("getevent -lt"))
+
+        mock_device.shell.assert_called_once()
+        call_kwargs = mock_device.shell.call_args.kwargs
+        call_args = mock_device.shell.call_args.args
+        stream_passed = call_kwargs.get("stream") or (len(call_args) > 1 and call_args[1] is True)
+        assert stream_passed, "shell_stream() must call AdbDevice.shell(cmd, stream=True)"

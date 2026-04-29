@@ -9,14 +9,21 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from gameplay_recorder.adb.connection import AdbConnection
+
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
 # ---------------------------------------------------------------------------
 
 
 def _make_mock_conn(free_kb: int = 600_000) -> MagicMock:
-    """Return a mock AdbConnection whose shell() fakes df output."""
-    conn = MagicMock()
+    """Return a spec=AdbConnection mock whose shell() fakes df output.
+
+    Using MagicMock(spec=AdbConnection) ensures that any call to a method that
+    does NOT exist on AdbConnection raises AttributeError immediately — catching
+    API drift in tests. This is the exact pattern that exposed C1 (shell() missing).
+    """
+    conn = MagicMock(spec=AdbConnection)
     # df /sdcard output: 'Filesystem   1K-blocks  Used Available Use% Mounted on'
     # We just need the integer in the "Available" column (4th field on data row).
     conn.shell.return_value = (
@@ -180,7 +187,7 @@ def test_segment_pulled_and_deleted_from_device():
     """
     from gameplay_recorder.capture.video_recorder import pull_and_delete
 
-    mock_conn = MagicMock()
+    mock_conn = MagicMock(spec=AdbConnection)
     device_path = "/sdcard/seg_0.mp4"
     local_dir = Path("/tmp/segments")
 
@@ -208,7 +215,7 @@ def test_pull_and_delete_uses_adb_pull_command():
     """
     from gameplay_recorder.capture.video_recorder import pull_and_delete
 
-    mock_conn = MagicMock()
+    mock_conn = MagicMock(spec=AdbConnection)
     mock_conn._serial = "emulator-5554"
     device_path = "/sdcard/seg_1.mp4"
     local_dir = Path("/tmp/segments")
@@ -287,7 +294,7 @@ def test_check_free_space_shell_exception_is_swallowed():
     """
     from gameplay_recorder.capture.video_recorder import check_free_space
 
-    conn = MagicMock()
+    conn = MagicMock(spec=AdbConnection)
     conn.shell.side_effect = RuntimeError("adb error")
     result = check_free_space(conn)
     assert result is None, "Shell exception should be swallowed — return None"
@@ -303,7 +310,7 @@ def test_check_free_space_malformed_output_is_skipped():
     """
     from gameplay_recorder.capture.video_recorder import check_free_space
 
-    conn = MagicMock()
+    conn = MagicMock(spec=AdbConnection)
     # reversed() will check the LAST line first — malformed goes last so ValueError fires first
     conn.shell.return_value = (
         "Filesystem       1K-blocks    Used Available Use% Mounted on\n"
@@ -328,7 +335,7 @@ def test_video_segment_recorder_instantiation():
     """
     from gameplay_recorder.capture.video_recorder import VideoSegmentRecorder
 
-    mock_conn = MagicMock()
+    mock_conn = MagicMock(spec=AdbConnection)
     local_dir = Path("/tmp/segs")
 
     recorder = VideoSegmentRecorder(adb_conn=mock_conn, local_dir=local_dir, duration=170)
