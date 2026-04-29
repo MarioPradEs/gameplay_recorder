@@ -625,3 +625,102 @@ class TestShellStreamCorrectApi:
         call_args = mock_device.shell.call_args.args
         stream_passed = call_kwargs.get("stream") or (len(call_args) > 1 and call_args[1] is True)
         assert stream_passed, "shell_stream() must call AdbDevice.shell(cmd, stream=True)"
+
+
+# ─── W_NEW2: screencap() socket timeout ──────────────────────────────────────
+
+
+class TestScreencapTimeout:
+    """Tests for W_NEW2: screencap() must apply a socket timeout before recv loop.
+
+    If the device hangs during screencap (low battery, USB issue, ANR), recv()
+    blocks the capture thread forever.  The fix:
+      1. Call adb_socket.conn.settimeout(timeout) before the recv loop.
+      2. On socket.timeout, raise AdbCommandError — not silently hang or return b"".
+      3. The timeout is configurable via screencap(timeout=N), default 30.0 seconds.
+
+    Mock convention: plain MagicMock() for socket (not spec=socket.socket) because
+    socket.socket has complex descriptor internals that confuse MagicMock(spec=).
+    The settimeout() call assertion is the real guard here.
+    """
+
+    def _make_screencap_mock_with_socket(self) -> tuple[MagicMock, MagicMock]:
+        """Return (mock_device, mock_socket) for timeout tests.
+
+        mock_socket is the raw socket (.conn) — we assert settimeout() on it.
+        """
+        fake_png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 20
+        mock_socket = MagicMock()
+        mock_socket.recv.side_effect = [fake_png, b""]
+
+        fake_adb_conn = MagicMock()
+        fake_adb_conn.conn = mock_socket
+
+        mock_device = MagicMock()
+        mock_device.shell.return_value = fake_adb_conn
+
+        return mock_device, mock_socket
+
+    def test_screencap_raises_adb_command_error_on_socket_timeout(self) -> None:
+        """screencap() must raise AdbCommandError (not hang) when recv times out.
+
+        After the fix: TimeoutError (= socket.timeout) is explicitly caught and
+        re-raised as AdbCommandError with a clear message.
+        """
+        mock_socket = MagicMock()
+        # recv raises TimeoutError (socket.timeout alias) simulating a hung device
+        mock_socket.recv.side_effect = TimeoutError("timed out")
+
+        fake_adb_conn = MagicMock()
+        fake_adb_conn.conn = mock_socket
+
+        mock_device = MagicMock()
+        mock_device.shell.return_value = fake_adb_conn
+
+        conn = AdbConnection(serial="test-serial")
+        conn._adb_device = mock_device
+
+        with pytest.raises(AdbCommandError, match="timed out"):
+            conn.screencap()
+
+    def test_screencap_calls_settimeout_with_default(self) -> None:
+        """screencap() must call socket.settimeout(30.0) by default.
+
+        Verifies that the socket timeout is applied BEFORE the recv loop with the
+        correct default value (30.0 seconds).
+        """
+        mock_device, mock_socket = self._make_screencap_mock_with_socket()
+
+        conn = AdbConnection(serial="test-serial")
+        conn._adb_device = mock_device
+
+        conn.screencap()
+
+        mock_socket.settimeout.assert_called_once_with(30.0)
+
+    def test_screencap_calls_settimeout_with_custom_value(self) -> None:
+        """screencap(timeout=10.0) must call socket.settimeout(10.0).
+
+        Triangulates that the timeout parameter is forwarded to settimeout(),
+        not hardcoded.
+        """
+        mock_device, mock_socket = self._make_screencap_mock_with_socket()
+
+        conn = AdbConnection(serial="test-serial")
+        conn._adb_device = mock_device
+
+        conn.screencap(timeout=10.0)
+
+        mock_socket.settimeout.assert_called_once_with(10.0)
+
+    def test_screencap_signature_has_timeout_parameter_with_default_30(self) -> None:
+        """screencap() signature must include timeout: float = 30.0.
+
+        Verifies the public API contract without needing a real device.
+        """
+        sig = inspect.signature(AdbConnection.screencap)
+        assert "timeout" in sig.parameters, (
+            "AdbConnection.screencap() is missing a 'timeout' parameter"
+        )
+        default = sig.parameters["timeout"].default
+        assert default == 30.0, f"screencap() timeout default must be 30.0, got {default!r}"

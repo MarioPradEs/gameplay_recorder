@@ -183,7 +183,7 @@ class AdbConnection:
 
     # ─── Screen capture ───────────────────────────────────────────────────────
 
-    def screencap(self) -> bytes:
+    def screencap(self, timeout: float = 30.0) -> bytes:
         """Capture the device screen as raw PNG bytes.
 
         Uses ``adbutils.AdbDevice.shell("screencap -p", stream=True)`` to open
@@ -198,11 +198,17 @@ class AdbConnection:
         The ``encoding`` keyword does NOT exist in adbutils 0.16.2 — passing it
         raises ``TypeError``.
 
+        Args:
+            timeout: Maximum seconds to wait for the screencap recv loop.
+                     Defaults to 30.0 seconds — generous for a capture that
+                     normally completes in <500 ms.  Raise ``AdbCommandError``
+                     if the device does not respond within this window.
+
         Returns:
             Raw PNG bytes from the device screencap.
 
         Raises:
-            AdbCommandError: If the command fails or returns no data.
+            AdbCommandError: If the command fails, times out, or returns no data.
         """
         self._ensure_device()
         try:
@@ -210,8 +216,14 @@ class AdbConnection:
             adb_socket = self._adb_device.shell("screencap -p", stream=True)
             raw: bytes = b""
             try:
+                adb_socket.conn.settimeout(timeout)
                 while True:
-                    chunk = adb_socket.conn.recv(65536)
+                    try:
+                        chunk = adb_socket.conn.recv(65536)
+                    except TimeoutError as exc:
+                        raise AdbCommandError(
+                            f"screencap timed out after {timeout}s — device may be unresponsive"
+                        ) from exc
                     if not chunk:
                         break
                     raw += chunk
