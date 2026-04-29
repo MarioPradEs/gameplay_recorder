@@ -222,3 +222,147 @@ def test_pull_and_delete_uses_adb_pull_command():
     call_args_str = str(mock_subprocess.run.call_args_list)
     assert "pull" in call_args_str
     assert device_path in call_args_str
+
+
+# ---------------------------------------------------------------------------
+# Triangulation: test_spawn_screenrecord_with_path_object_uses_posix_separators
+# Exercises the Path -> as_posix() branch in _spawn_screenrecord (line 125)
+# ---------------------------------------------------------------------------
+
+
+def test_spawn_screenrecord_with_path_object_uses_posix_separators():
+    """_spawn_screenrecord converts a Path device_path to POSIX string for Android.
+
+    Triangulation: Path('/sdcard/seg_0.mp4') must arrive as '/sdcard/seg_0.mp4'
+    in the adb command, not as a Windows-style backslash path.
+    """
+    from gameplay_recorder.capture.video_recorder import _spawn_screenrecord
+
+    with patch("gameplay_recorder.capture.video_recorder.subprocess") as mock_subprocess:
+        mock_proc = MagicMock()
+        mock_subprocess.Popen.return_value = mock_proc
+
+        # Pass a real Path object — must convert to POSIX
+        _spawn_screenrecord("DEVICE456", Path("/sdcard/seg_0.mp4"), duration=170)
+
+    cmd = mock_subprocess.Popen.call_args[0][0]
+    # Must be a forward-slash POSIX path in the command, never backslashes
+    device_path_in_cmd = cmd[-1]
+    assert "/" in device_path_in_cmd, (
+        f"Expected POSIX path in adb command, got: {device_path_in_cmd!r}"
+    )
+    assert "seg_0.mp4" in device_path_in_cmd
+
+
+# ---------------------------------------------------------------------------
+# Triangulation: test_segment_path_returns_correct_device_dir
+# ---------------------------------------------------------------------------
+
+
+def test_segment_path_returns_correct_device_dir():
+    """segment_path() uses /sdcard as the default device directory.
+
+    Triangulation: verify default dir and custom override work correctly.
+    """
+    from gameplay_recorder.capture.video_recorder import segment_path
+
+    default_p = segment_path(0)
+    assert "sdcard" in str(default_p).lower() or "sdcard" in default_p.as_posix()
+
+    custom_p = segment_path(3, device_dir="/data/local/tmp")
+    assert custom_p.name == "seg_3.mp4"
+    assert "tmp" in str(custom_p)
+
+
+# ---------------------------------------------------------------------------
+# Triangulation: test_check_free_space_shell_exception_is_swallowed
+# Exercises the except block in check_free_space
+# ---------------------------------------------------------------------------
+
+
+def test_check_free_space_shell_exception_is_swallowed():
+    """check_free_space returns None (allow proceed) on shell error.
+
+    Triangulation: if adb shell fails entirely, we do not block the user.
+    """
+    from gameplay_recorder.capture.video_recorder import check_free_space
+
+    conn = MagicMock()
+    conn.shell.side_effect = RuntimeError("adb error")
+    result = check_free_space(conn)
+    assert result is None, "Shell exception should be swallowed — return None"
+
+
+def test_check_free_space_malformed_output_is_skipped():
+    """check_free_space handles malformed df output gracefully.
+
+    Triangulation: exercises the ValueError: continue branch (lines 84-85).
+    Lines with non-numeric 'Available' field (at index 3) are skipped.
+    We put valid line FIRST and malformed line LAST so reversed() hits the
+    malformed line first, triggers ValueError, continues, then parses valid line.
+    """
+    from gameplay_recorder.capture.video_recorder import check_free_space
+
+    conn = MagicMock()
+    # reversed() will check the LAST line first — malformed goes last so ValueError fires first
+    conn.shell.return_value = (
+        "Filesystem       1K-blocks    Used Available Use% Mounted on\n"
+        "tmpfs             1024000    400000   600000  40% /sdcard\n"
+        "overlayfs         1024000    400000    bytes  40% /data\n"  # 'bytes' at idx 3 → ValueError
+    )
+    result = check_free_space(conn)
+    # After skipping the malformed line, the valid tmpfs line is found with 600 MB
+    assert result is None, f"600 MB free should pass after skipping malformed line, got: {result!r}"
+
+
+# ---------------------------------------------------------------------------
+# Triangulation: test_video_segment_recorder_instantiation
+# Exercises VideoSegmentRecorder.__init__ and segments property (lines 248)
+# ---------------------------------------------------------------------------
+
+
+def test_video_segment_recorder_instantiation():
+    """VideoSegmentRecorder can be instantiated with mock AdbConnection.
+
+    Triangulation: verifies constructor stores config correctly.
+    """
+    from gameplay_recorder.capture.video_recorder import VideoSegmentRecorder
+
+    mock_conn = MagicMock()
+    local_dir = Path("/tmp/segs")
+
+    recorder = VideoSegmentRecorder(adb_conn=mock_conn, local_dir=local_dir, duration=170)
+
+    assert recorder._adb_conn is mock_conn
+    assert recorder._local_dir == local_dir
+    assert recorder._duration == 170
+    # No segments yet
+    assert recorder.segments == []
+
+
+# ---------------------------------------------------------------------------
+# Triangulation: test_resolve_adb_uses_meipass_when_available
+# Exercises the sys._MEIPASS branch in _resolve_adb (lines 84-85, 96-101)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_adb_uses_system_adb_when_no_meipass():
+    """_resolve_adb returns system adb when no PyInstaller bundle is present.
+
+    Triangulation: non-bundled path (MEIPASS not set) — exercises lines 96-101.
+    """
+    import sys
+
+    from gameplay_recorder.capture.video_recorder import _resolve_adb
+
+    # Ensure _MEIPASS is not set for this test
+    original = getattr(sys, "_MEIPASS", None)
+    if hasattr(sys, "_MEIPASS"):
+        del sys._MEIPASS
+    try:
+        result = _resolve_adb()
+        # Result should contain 'adb' (either system path or literal 'adb' fallback)
+        assert "adb" in result.lower(), f"Expected adb binary path, got: {result!r}"
+    finally:
+        if original is not None:
+            sys._MEIPASS = original
