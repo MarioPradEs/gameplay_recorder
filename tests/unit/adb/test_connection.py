@@ -8,6 +8,7 @@ Tests cover:
 - disconnect: clean shutdown
 - IP firewall: no input injection methods on AdbConnection
 - Edge cases: MultipleDevicesError carries serials, DeviceInfo fields, screencap error path
+- Regression: AdbClient.list() does not exist — spec-checked mocks catch API drift
 """
 
 from __future__ import annotations
@@ -15,7 +16,9 @@ from __future__ import annotations
 import inspect
 from unittest.mock import MagicMock, patch
 
+import adbutils
 import pytest
+from adbutils._proto import DeviceEvent
 
 from gameplay_recorder.adb.connection import (
     AdbCommandError,
@@ -43,39 +46,46 @@ def _make_device(serial: str = "emulator-5554", state: str = "device") -> MagicM
 class TestListDevices:
     def test_list_devices_returns_empty_when_none_connected(self) -> None:
         with patch("gameplay_recorder.adb.connection.adbutils") as mock_adb:
-            mock_client = MagicMock()
-            mock_client.list.return_value = []
-            mock_adb.AdbClient.return_value = mock_client
-
-            conn = AdbConnection()
-            result = conn.list_devices()
+            mock_adb.AdbClient.return_value = MagicMock()
+            with patch(
+                "gameplay_recorder.adb.connection._list_all_devices",
+                return_value=[],
+            ):
+                conn = AdbConnection()
+                result = conn.list_devices()
 
         assert result == []
 
     def test_list_devices_returns_single_device_when_one_connected(self) -> None:
-        with patch("gameplay_recorder.adb.connection.adbutils") as mock_adb:
-            mock_client = MagicMock()
-            device = _make_device("abc123", "device")
-            mock_client.list.return_value = [device]
-            mock_adb.AdbClient.return_value = mock_client
+        fake_events = [DeviceEvent(present=True, serial="abc123", status="device")]
 
-            conn = AdbConnection()
-            result = conn.list_devices()
+        with patch("gameplay_recorder.adb.connection.adbutils") as mock_adb:
+            mock_adb.AdbClient.return_value = MagicMock()
+            with patch(
+                "gameplay_recorder.adb.connection._list_all_devices",
+                return_value=fake_events,
+            ):
+                conn = AdbConnection()
+                result = conn.list_devices()
 
         assert len(result) == 1
         assert result[0].serial == "abc123"
         assert result[0].state == "device"
 
     def test_list_devices_returns_multiple_when_two_connected(self) -> None:
-        with patch("gameplay_recorder.adb.connection.adbutils") as mock_adb:
-            mock_client = MagicMock()
-            d1 = _make_device("device-A", "device")
-            d2 = _make_device("device-B", "device")
-            mock_client.list.return_value = [d1, d2]
-            mock_adb.AdbClient.return_value = mock_client
+        fake_events = [
+            DeviceEvent(present=True, serial="device-A", status="device"),
+            DeviceEvent(present=True, serial="device-B", status="device"),
+        ]
 
-            conn = AdbConnection()
-            result = conn.list_devices()
+        with patch("gameplay_recorder.adb.connection.adbutils") as mock_adb:
+            mock_adb.AdbClient.return_value = MagicMock()
+            with patch(
+                "gameplay_recorder.adb.connection._list_all_devices",
+                return_value=fake_events,
+            ):
+                conn = AdbConnection()
+                result = conn.list_devices()
 
         assert len(result) == 2
         serials = {r.serial for r in result}
@@ -90,7 +100,7 @@ class TestSelectSingleDevice:
         with patch("gameplay_recorder.adb.connection.adbutils") as mock_adb:
             mock_client = MagicMock()
             device = _make_device("ok-device", "device")
-            mock_client.list.return_value = [device]
+            mock_client.device_list.return_value = [device]
             mock_adb.AdbClient.return_value = mock_client
 
             conn = AdbConnection.select_single_device()
@@ -100,18 +110,21 @@ class TestSelectSingleDevice:
     def test_select_single_device_raises_no_device_when_zero(self) -> None:
         with patch("gameplay_recorder.adb.connection.adbutils") as mock_adb:
             mock_client = MagicMock()
-            mock_client.list.return_value = []
+            mock_client.device_list.return_value = []
             mock_adb.AdbClient.return_value = mock_client
-
-            with pytest.raises(NoDeviceConnectedError):
-                AdbConnection.select_single_device()
+            with patch(
+                "gameplay_recorder.adb.connection._list_all_devices",
+                return_value=[],
+            ):
+                with pytest.raises(NoDeviceConnectedError):
+                    AdbConnection.select_single_device()
 
     def test_select_single_device_raises_multiple_devices_with_serials_listed(self) -> None:
         with patch("gameplay_recorder.adb.connection.adbutils") as mock_adb:
             mock_client = MagicMock()
             d1 = _make_device("serial-X", "device")
             d2 = _make_device("serial-Y", "device")
-            mock_client.list.return_value = [d1, d2]
+            mock_client.device_list.return_value = [d1, d2]
             mock_adb.AdbClient.return_value = mock_client
 
             with pytest.raises(MultipleDevicesError) as exc_info:
@@ -122,14 +135,21 @@ class TestSelectSingleDevice:
         assert "serial-Y" in str(exc_info.value)
 
     def test_select_single_device_raises_unauthorized_when_state_is_unauthorized(self) -> None:
+        """DeviceUnauthorizedError is raised when device_list() is empty but an
+        unauthorized device appears in the raw host:devices output."""
+        unauth_event = DeviceEvent(present=True, serial="unauth-device", status="unauthorized")
+
         with patch("gameplay_recorder.adb.connection.adbutils") as mock_adb:
             mock_client = MagicMock()
-            device = _make_device("unauth-device", "unauthorized")
-            mock_client.list.return_value = [device]
+            # device_list() returns only authorised devices — empty in this case
+            mock_client.device_list.return_value = []
             mock_adb.AdbClient.return_value = mock_client
-
-            with pytest.raises(DeviceUnauthorizedError):
-                AdbConnection.select_single_device()
+            with patch(
+                "gameplay_recorder.adb.connection._list_all_devices",
+                return_value=[unauth_event],
+            ):
+                with pytest.raises(DeviceUnauthorizedError):
+                    AdbConnection.select_single_device()
 
 
 # ─── screencap ───────────────────────────────────────────────────────────────
@@ -286,7 +306,7 @@ class TestEdgeCases:
             mock_client = MagicMock()
             d1 = _make_device("d1", "device")
             d2 = _make_device("d2", "device")
-            mock_client.list.return_value = [d1, d2]
+            mock_client.device_list.return_value = [d1, d2]
             mock_adb.AdbClient.return_value = mock_client
 
             with pytest.raises(MultipleDevicesError) as exc_info:
@@ -300,3 +320,80 @@ class TestEdgeCases:
         # No device set — already disconnected
         conn.disconnect()
         assert conn.is_connected() is False
+
+
+# ─── Regression: spec-checked AdbClient mock (API drift guard) ───────────────
+
+
+class TestAdbClientSpecChecked:
+    """Regression tests that use MagicMock(spec=adbutils.AdbClient).
+
+    A plain MagicMock accepts ANY method call (including non-existent ones like
+    .list()), which is why the original bug was invisible to unit tests.
+
+    MagicMock(spec=adbutils.AdbClient) restricts attribute access to ONLY methods
+    that actually exist on AdbClient in the installed version.  If connection.py
+    calls a non-existent method, these tests will fail with AttributeError — which
+    is exactly the bug we're guarding against.
+
+    Regression for: AttributeError: 'AdbClient' object has no attribute 'list'
+    (adbutils 0.16.2 has device_list(), NOT list())
+    """
+
+    def test_select_single_device_does_not_call_nonexistent_list_method(self) -> None:
+        """select_single_device() must NOT call client.list().
+
+        This test will raise AttributeError if the production code calls a method
+        that doesn't exist on the real adbutils.AdbClient — catching API drift.
+        """
+        mock_client = MagicMock(spec=adbutils.AdbClient)
+        # device_list() returns a list of AdbDevice-like objects
+        mock_device = MagicMock()
+        mock_device.serial = "spec-checked-device"
+        mock_client.device_list.return_value = [mock_device]
+        mock_client.device.return_value = MagicMock()
+
+        with patch("gameplay_recorder.adb.connection.adbutils") as mock_adb:
+            mock_adb.AdbClient.return_value = mock_client
+            conn = AdbConnection.select_single_device()
+
+        assert conn._serial == "spec-checked-device"
+
+    def test_list_devices_does_not_call_nonexistent_list_method(self) -> None:
+        """list_devices() must NOT call client.list().
+
+        Same guard: spec-restricted mock will reject any call to .list().
+        list_devices() uses _list_all_devices() (socket-level); we patch that
+        helper to return a controlled list of DeviceEvent objects.
+        """
+        from adbutils._proto import DeviceEvent
+
+        fake_events = [DeviceEvent(present=True, serial="spec-dev-1", status="device")]
+
+        with patch("gameplay_recorder.adb.connection.adbutils") as mock_adb:
+            mock_client = MagicMock(spec=adbutils.AdbClient)
+            mock_adb.AdbClient.return_value = mock_client
+            with patch(
+                "gameplay_recorder.adb.connection._list_all_devices",
+                return_value=fake_events,
+            ):
+                conn = AdbConnection()
+                result = conn.list_devices()
+
+        assert len(result) == 1
+        assert result[0].serial == "spec-dev-1"
+        assert result[0].state == "device"
+
+    def test_select_single_device_raises_no_device_with_spec_mock(self) -> None:
+        """NoDeviceConnectedError is raised when device_list() and _list_all_devices() are empty."""
+        mock_client = MagicMock(spec=adbutils.AdbClient)
+        mock_client.device_list.return_value = []
+
+        with patch("gameplay_recorder.adb.connection.adbutils") as mock_adb:
+            mock_adb.AdbClient.return_value = mock_client
+            with patch(
+                "gameplay_recorder.adb.connection._list_all_devices",
+                return_value=[],
+            ):
+                with pytest.raises(NoDeviceConnectedError):
+                    AdbConnection.select_single_device()

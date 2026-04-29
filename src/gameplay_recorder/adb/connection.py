@@ -59,6 +59,28 @@ class DeviceInfo:
     state: str
 
 
+# ─── Internal helpers ─────────────────────────────────────────────────────────
+
+
+def _list_all_devices(client: adbutils.AdbClient) -> list:  # type: ignore[name-defined]
+    """Return every device visible to the ADB server, regardless of state.
+
+    ``adbutils.AdbClient.device_list()`` only yields authorised devices
+    (state == 'device').  This helper sends the raw ``host:devices`` ADB
+    protocol command and uses ``client._output2devices()`` — an internal
+    helper that parses all devices including 'unauthorized' and 'offline' —
+    so callers can surface actionable error messages.
+
+    Returns a list of ``adbutils.DeviceEvent`` namedtuples with fields
+    ``present``, ``serial``, and ``status``.
+    """
+    with client._connect() as c:
+        c.send_command("host:devices")
+        c.check_okay()
+        output = c.read_string_block()
+    return client._output2devices(output)
+
+
 # ─── AdbConnection ────────────────────────────────────────────────────────────
 
 
@@ -95,6 +117,12 @@ class AdbConnection:
     ) -> AdbConnection:
         """Discover exactly one authorised device and return a ready connection.
 
+        Uses ``adbutils.AdbClient.device_list()`` (adbutils 0.16.2 API).
+        ``device_list()`` only yields devices whose ADB state is ``device``
+        (i.e. already authorised).  Unauthorized devices are therefore absent
+        from the list; we detect them via a separate ``host:devices`` socket
+        query so we can surface an actionable error message.
+
         Raises:
             NoDeviceConnectedError: Zero devices found.
             MultipleDevicesError: More than one device found (carries serials).
@@ -104,9 +132,18 @@ class AdbConnection:
             raise ImportError("adbutils not installed — run: pip install adbutils")
 
         client = adbutils.AdbClient(host=host, port=port)
-        devices = client.list()
+        devices = client.device_list()
 
         if not devices:
+            # No authorised devices — check whether an unauthorised one is present.
+            all_devices = _list_all_devices(client)
+            if all_devices:
+                # At least one device exists but none are authorised.
+                serial = all_devices[0].serial
+                raise DeviceUnauthorizedError(
+                    f"Device {serial!r} is unauthorized. "
+                    "Tap 'Allow' on the device screen and rescan."
+                )
             raise NoDeviceConnectedError(
                 "No ADB device detected. Ensure the device is connected, "
                 "USB Debugging is enabled, and the ADB server is running."
@@ -117,12 +154,6 @@ class AdbConnection:
             raise MultipleDevicesError(serials)
 
         device = devices[0]
-        if getattr(device, "state", "device") == "unauthorized":
-            raise DeviceUnauthorizedError(
-                f"Device {device.serial!r} is unauthorized. "
-                "Tap 'Allow' on the device screen and rescan."
-            )
-
         conn = cls(serial=device.serial, host=host, port=port)
         conn._adb_device = client.device(device.serial)
         return conn
@@ -130,16 +161,22 @@ class AdbConnection:
     # ─── Device listing ───────────────────────────────────────────────────────
 
     def list_devices(self) -> list[DeviceInfo]:
-        """Return all currently visible ADB devices.
+        """Return all currently visible ADB devices (authorised and unauthorized).
 
-        Returns an empty list if no devices are connected.  Does not raise.
+        Uses ``_list_all_devices()`` which reads the raw ``host:devices`` ADB
+        protocol output so that devices in any state (device, unauthorized,
+        offline) are included.  Returns an empty list if no devices are
+        connected.  Does not raise.
         """
         if adbutils is None:
             return []
 
         client = adbutils.AdbClient(host=self._host, port=self._port)
-        raw = client.list()
-        return [DeviceInfo(serial=d.serial, state=getattr(d, "state", "device")) for d in raw]
+        try:
+            raw = _list_all_devices(client)
+        except Exception:
+            return []
+        return [DeviceInfo(serial=e.serial, state=e.status) for e in raw]
 
     # ─── Screen capture ───────────────────────────────────────────────────────
 
