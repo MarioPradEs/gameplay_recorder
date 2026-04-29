@@ -16,13 +16,13 @@ Naming conventions:
   - Collision handling: appends _2, _3, … as needed.
   - Output directory auto-created if it does not exist.
 
-IP-leak guardrail:
-  - No bot_neuronal imports.
+Data integrity guardrail:
+  - No consumer-system imports.
   - No hardcoded game-package names.
   - Metadata comes entirely from the SessionMeta passed in.
 
-TODO Phase 9: replace placeholder "trust everything" filter with real IPFirewall
-that validates events.jsonl before packaging.
+TODO Phase 9: replace placeholder "trust everything" filter with real data
+validation that validates events.jsonl schema before packaging.
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ def _build_zip_name(meta: SessionMeta) -> str:
 
     Example:
         started_at="2026-04-28T14:00:00Z"
-        → zombie_gore_v1.32.1_alice_2026-04-28_140000.zip
+        → my_game_v1.32.1_alice_2026-04-28_140000.zip
     """
     # Parse started_at: "2026-04-28T14:00:00Z"
     date_part, time_raw = meta.started_at.split("T")
@@ -96,9 +96,9 @@ def assemble_zip(
     4. Assemble ZIP with: session_meta.json, gameplay.mp4, events.jsonl, screenshots/*.
     5. Explicitly exclude perception.jsonl and any other unlisted file.
 
-    IP-leak guardrail (Phase 9 placeholder):
-      events.jsonl is included as-is. Phase 9 will add IPFirewall validation here.
-      # TODO Phase 9: replace with IPFirewall.validate_events_file(session_dir / "events.jsonl")
+    Data validation (Phase 9 placeholder):
+      events.jsonl is included as-is. Phase 9 wires schema validation here.
+      # TODO Phase 9: replace with validate_events_file(session_dir / "events.jsonl")
 
     Args:
         session_dir: Directory containing the session files produced by capture workers.

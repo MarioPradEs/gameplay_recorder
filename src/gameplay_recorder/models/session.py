@@ -18,7 +18,7 @@ class SessionMeta:
     Exactly 6 fields — no extras (spec: Requirement "Session Metadata").
 
     Fields:
-        game_id:          Identifier string from the game dropdown (e.g. "zombie_gore").
+        game_id:          Identifier string from the game dropdown (e.g. "my_game").
         game_version:     Free-text game version string (e.g. "1.32.1").
         recorded_by:      Player / operator name.
         started_at:       UTC ISO 8601 timestamp string (YYYY-MM-DDTHH:MM:SSZ).

@@ -1,8 +1,8 @@
 """TouchEventMonitor — daemon thread that streams getevent and queues RawTouchEvents.
 
-Adapted from bot-neuronal/recorder/event_monitor.py.
+Adapted from the private trainer's recorder/event_monitor.py.
 Changes:
-- Import: gameplay_recorder.models.touch_event (not bot_neuronal.recorder.models)
+- Import: gameplay_recorder.models.touch_event (not the private trainer models)
 - AdbConnection (not ADBDriver) — uses shell_stream / shell
 - Field names: ts, type (not timestamp_s, action)
 - Type values: "touch_down", "touch_move", "touch_up" (not "DOWN", "MOVE", "UP")

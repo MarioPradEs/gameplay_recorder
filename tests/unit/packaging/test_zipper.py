@@ -15,7 +15,7 @@ from gameplay_recorder.models.session import SessionMeta
 def _make_meta(**overrides) -> SessionMeta:
     """Helper: build a valid SessionMeta."""
     defaults = dict(
-        game_id="zombie_gore",
+        game_id="my_game",
         game_version="1.32.1",
         recorded_by="alice",
         started_at="2026-04-28T14:00:00Z",
@@ -56,14 +56,14 @@ class TestZipFilenameFormat:
         """ZIP filename is {game_id}_v{game_version}_{recorded_by}_{date}_{time}.zip.
 
         Spec: Requirement "ZIP Packaging", Scenario "Filename format".
-        game_id="zombie_gore", game_version="1.32.1", recorded_by="alice",
-        started_at="2026-04-28T14:00:00Z" → zombie_gore_v1.32.1_alice_2026-04-28_140000.zip
+        game_id="my_game", game_version="1.32.1", recorded_by="alice",
+        started_at="2026-04-28T14:00:00Z" → my_game_v1.32.1_alice_2026-04-28_140000.zip
         """
         from gameplay_recorder.packaging.zipper import assemble_zip
 
         session_dir = _make_session_dir(tmp_path)
         meta = _make_meta(
-            game_id="zombie_gore",
+            game_id="my_game",
             game_version="1.32.1",
             recorded_by="alice",
             started_at="2026-04-28T14:00:00Z",
@@ -72,7 +72,7 @@ class TestZipFilenameFormat:
 
         result = assemble_zip(session_dir, meta, output_dir)
 
-        assert result.name == "zombie_gore_v1.32.1_alice_2026-04-28_140000.zip"
+        assert result.name == "my_game_v1.32.1_alice_2026-04-28_140000.zip"
 
     def test_zip_filename_uses_started_at_for_date_time(self, tmp_path: Path) -> None:
         """The date and time components in the filename come from started_at."""
@@ -166,7 +166,7 @@ class TestZipContents:
             content = json.loads(zf.read("session_meta.json").decode("utf-8"))
 
         assert len(content) == 6
-        assert content["game_id"] == "zombie_gore"
+        assert content["game_id"] == "my_game"
         assert content["schema_version"] == "1"
         assert isinstance(content["schema_version"], str)
 
@@ -187,12 +187,12 @@ class TestZipFilenameCollision:
         output_dir.mkdir()
 
         # Create the collision file
-        base_name = "zombie_gore_v1.32.1_alice_2026-04-28_140000.zip"
+        base_name = "my_game_v1.32.1_alice_2026-04-28_140000.zip"
         (output_dir / base_name).write_bytes(b"existing")
 
         result = assemble_zip(session_dir, meta, output_dir)
 
-        assert result.name == "zombie_gore_v1.32.1_alice_2026-04-28_140000_2.zip"
+        assert result.name == "my_game_v1.32.1_alice_2026-04-28_140000_2.zip"
 
     def test_zip_filename_collision_suffix_increments_further(self, tmp_path: Path) -> None:
         """Two existing ZIPs: next one appends _3."""
@@ -203,14 +203,14 @@ class TestZipFilenameCollision:
         output_dir = tmp_path / "out"
         output_dir.mkdir()
 
-        base = "zombie_gore_v1.32.1_alice_2026-04-28_140000.zip"
-        base2 = "zombie_gore_v1.32.1_alice_2026-04-28_140000_2.zip"
+        base = "my_game_v1.32.1_alice_2026-04-28_140000.zip"
+        base2 = "my_game_v1.32.1_alice_2026-04-28_140000_2.zip"
         (output_dir / base).write_bytes(b"existing1")
         (output_dir / base2).write_bytes(b"existing2")
 
         result = assemble_zip(session_dir, meta, output_dir)
 
-        assert result.name == "zombie_gore_v1.32.1_alice_2026-04-28_140000_3.zip"
+        assert result.name == "my_game_v1.32.1_alice_2026-04-28_140000_3.zip"
 
 
 class TestZipOutputDirectory:
