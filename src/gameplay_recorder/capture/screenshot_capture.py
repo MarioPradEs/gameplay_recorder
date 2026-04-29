@@ -10,11 +10,14 @@ Signal: screenshot_saved(Path)
 
 from __future__ import annotations
 
+import logging
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from gameplay_recorder.config import SCREENSHOT_INTERVAL_S
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from gameplay_recorder.adb.connection import AdbConnection
@@ -118,8 +121,13 @@ class ScreenshotCapture(QThread):
         while not self.isInterruptionRequested():
             try:
                 self._take_screenshot()
-            except Exception:
-                pass  # silently skip failed captures — recording must continue
+            except Exception as exc:
+                # Log failed captures — recording must continue uninterrupted,
+                # but failures should not be invisible. A single failed screencap
+                # is recoverable; the user can diagnose from logs.
+                logger.warning(
+                    "ScreenshotCapture: screenshot failed (%s: %s)", type(exc).__name__, exc
+                )
             # Sleep in small increments so interruption is responsive
             elapsed = 0.0
             while elapsed < self.interval_s and not self.isInterruptionRequested():

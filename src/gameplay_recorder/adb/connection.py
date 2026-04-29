@@ -9,8 +9,11 @@ Depends only on adbutils. No numpy, PIL, or OpenCV.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 try:
     import adbutils
@@ -183,38 +186,113 @@ class AdbConnection:
     def screencap(self) -> bytes:
         """Capture the device screen as raw PNG bytes.
 
-        Uses ``adb exec-out screencap -p`` via adbutils shell.
+        Uses ``adbutils.AdbDevice.shell("screencap -p", stream=True)`` to open
+        a streaming shell connection, then reads all raw bytes from the
+        underlying socket.
+
+        Real adbutils 0.16.2 API for ``AdbDevice.shell()``:
+            shell(cmdargs, stream=False, timeout=None, rstrip=True) -> str | AdbConnection
+        When ``stream=True``: returns ``adbutils._adb.AdbConnection`` (socket wrapper).
+        When ``stream=False``: returns ``str`` — NOT useful for binary PNG data.
+
+        The ``encoding`` keyword does NOT exist in adbutils 0.16.2 — passing it
+        raises ``TypeError``.
 
         Returns:
             Raw PNG bytes from the device screencap.
 
         Raises:
-            AdbCommandError: If the command fails.
+            AdbCommandError: If the command fails or returns no data.
         """
         self._ensure_device()
         try:
-            return self._adb_device.shell("screencap -p", encoding=None)
+            # stream=True returns the adbutils internal AdbConnection (socket wrapper)
+            adb_socket = self._adb_device.shell("screencap -p", stream=True)
+            raw: bytes = b""
+            try:
+                while True:
+                    chunk = adb_socket.conn.recv(65536)
+                    if not chunk:
+                        break
+                    raw += chunk
+            finally:
+                adb_socket.close()
+            return raw
+        except AdbCommandError:
+            raise
         except Exception as exc:
             raise AdbCommandError(f"screencap failed: {exc}") from exc
+
+    # ─── Shell command ────────────────────────────────────────────────────────
+
+    def shell(self, command: str) -> str:
+        """Run a shell command on the connected device and return the output.
+
+        Delegates to ``adbutils.AdbDevice.shell(command)`` which returns a
+        stripped ``str``.
+
+        Real adbutils 0.16.2 API:
+            AdbDevice.shell(cmdargs, stream=False, timeout=None, rstrip=True) -> str
+
+        Args:
+            command: Shell command to run (e.g. ``"df /sdcard"``, ``"rm -f /sdcard/seg_0.mp4"``).
+
+        Returns:
+            Command output as a string (trailing newline stripped by adbutils).
+
+        Raises:
+            AdbCommandError: If the device is not connected or the command fails.
+        """
+        self._ensure_device()
+        try:
+            return self._adb_device.shell(command)
+        except AdbCommandError:
+            raise
+        except Exception as exc:
+            raise AdbCommandError(f"shell command failed: {exc}") from exc
 
     # ─── Streaming shell ──────────────────────────────────────────────────────
 
     def shell_stream(self, command: str) -> Iterator[bytes]:
         """Stream the output of a long-running ADB shell command.
 
-        Yields raw output chunks (bytes) line by line until the command
-        terminates or the caller stops iterating.  Used by
+        Yields raw output bytes line by line until the command terminates or
+        the caller stops iterating.  Used by
         :class:`~gameplay_recorder.capture.event_monitor.TouchEventMonitor`
         to consume the ``getevent -lt`` stream.
+
+        Real adbutils 0.16.2 API:
+            AdbDevice.shell(cmd, stream=True) -> adbutils._adb.AdbConnection
+        ``AdbDevice`` has NO ``shell_stream()`` method — that call raises
+        ``AttributeError`` at runtime.
 
         Args:
             command: Shell command to execute (e.g. ``"getevent -lt /dev/input/event3"``).
 
         Yields:
-            Bytes chunks / lines from the command output.
+            Raw bytes lines from the command output.
         """
         self._ensure_device()
-        yield from self._adb_device.shell_stream(command)
+        adb_socket = self._adb_device.shell(command, stream=True)
+        try:
+            buffer = b""
+            while True:
+                chunk = adb_socket.conn.recv(4096)
+                if not chunk:
+                    break
+                buffer += chunk
+                # yield complete lines
+                while b"\n" in buffer:
+                    line, buffer = buffer.split(b"\n", 1)
+                    yield line + b"\n"
+            # yield any remaining data
+            if buffer:
+                yield buffer
+        finally:
+            try:
+                adb_socket.close()
+            except Exception:
+                pass
 
     # ─── Lifecycle ────────────────────────────────────────────────────────────
 

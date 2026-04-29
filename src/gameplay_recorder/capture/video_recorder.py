@@ -10,6 +10,7 @@ Signals: segment_started(int), segment_finished(int, Path), recording_error(str)
 
 from __future__ import annotations
 
+import logging
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from gameplay_recorder.config import SEGMENT_DURATION_S
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from gameplay_recorder.adb.connection import AdbConnection
@@ -83,8 +86,11 @@ def check_free_space(adb_conn: AdbConnection) -> str | None:
                     return None
                 except ValueError:
                     continue
-    except Exception:
-        pass
+    except Exception as exc:
+        # AdbCommandError (device offline, shell failed) or unexpected error.
+        # Log so the user can investigate, but do NOT block recording — the
+        # free-space check is a best-effort guard, not a hard gate.
+        logger.warning("check_free_space: df /sdcard failed (%s: %s)", type(exc).__name__, exc)
     return None  # if we can't determine, allow the user to proceed
 
 
