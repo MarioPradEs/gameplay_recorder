@@ -9,6 +9,8 @@ from __future__ import annotations
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from gameplay_recorder.models.session import SessionMeta
 
 
@@ -284,3 +286,138 @@ class TestZipOutputDirectory:
 
         # original 2 + 1000 new = 1002
         assert png_count == 1002
+
+
+# ---------------------------------------------------------------------------
+# Phase 9: Data validation integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestZipValidation:
+    """Phase 9 — assemble_zip raises DataValidationError on invalid events.jsonl.
+
+    Spec: Requirement "ZIP Packaging", Scenario "Data validation".
+    """
+
+    def test_clean_events_passes_validation(self, tmp_path: Path) -> None:
+        """Valid events.jsonl (5 fields only) → ZIP is created successfully."""
+        from gameplay_recorder.packaging.zipper import assemble_zip
+
+        session_dir = _make_session_dir(tmp_path)
+        meta = _make_meta()
+        output_dir = tmp_path / "out"
+
+        result = assemble_zip(session_dir, meta, output_dir)
+
+        assert result.exists()
+        assert zipfile.is_zipfile(result)
+
+    def test_dirty_events_raises_data_validation_error(self, tmp_path: Path) -> None:
+        """events.jsonl with an extra field raises DataValidationError before writing ZIP.
+
+        Spec: "DataValidationError raised when events.jsonl has invalid lines".
+        """
+        from gameplay_recorder.packaging.validation import DataValidationError
+        from gameplay_recorder.packaging.zipper import assemble_zip
+
+        session_dir = _make_session_dir(tmp_path)
+        # Overwrite events.jsonl with a dirty line (extra field)
+        dirty = (
+            '{"ts": 1.0, "type": "touch_down", "x": 100, "y": 200, "slot": 0,'
+            ' "strategy_hint": "A"}\n'
+        )
+        (session_dir / "events.jsonl").write_text(dirty, encoding="utf-8")
+        meta = _make_meta()
+        output_dir = tmp_path / "out"
+
+        with pytest.raises(DataValidationError):
+            assemble_zip(session_dir, meta, output_dir)
+
+    def test_dirty_events_writes_rejected_jsonl_sibling(self, tmp_path: Path) -> None:
+        """When validation fails, events.rejected.jsonl is written next to the (non-created) ZIP.
+
+        Spec: "events.rejected.jsonl written in output_dir on validation failure".
+        """
+        import json as _json
+
+        from gameplay_recorder.packaging.validation import DataValidationError
+        from gameplay_recorder.packaging.zipper import assemble_zip
+
+        session_dir = _make_session_dir(tmp_path)
+        dirty = (
+            '{"ts": 1.0, "type": "touch_down", "x": 100, "y": 200, "slot": 0,'
+            ' "strategy_hint": "A"}\n'
+        )
+        (session_dir / "events.jsonl").write_text(dirty, encoding="utf-8")
+        meta = _make_meta()
+        output_dir = tmp_path / "out"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        with pytest.raises(DataValidationError):
+            assemble_zip(session_dir, meta, output_dir)
+
+        rejected_file = output_dir / "events.rejected.jsonl"
+        assert rejected_file.exists(), "events.rejected.jsonl must be written next to the ZIP"
+        content = _json.loads(rejected_file.read_text(encoding="utf-8"))
+        assert content["violation_count"] >= 1
+        assert len(content["violations"]) >= 1
+
+    def test_dirty_events_no_zip_written(self, tmp_path: Path) -> None:
+        """When validation fails, no ZIP file is created in output_dir."""
+        from gameplay_recorder.packaging.validation import DataValidationError
+        from gameplay_recorder.packaging.zipper import assemble_zip
+
+        session_dir = _make_session_dir(tmp_path)
+        (session_dir / "events.jsonl").write_text(
+            '{"ts": 1.0, "type": "touch_down", "x": 100, "y": 200, "slot": 0, "bad_field": 1}\n',
+            encoding="utf-8",
+        )
+        meta = _make_meta()
+        output_dir = tmp_path / "out"
+
+        with pytest.raises(DataValidationError):
+            assemble_zip(session_dir, meta, output_dir)
+
+        zips = list(output_dir.glob("*.zip")) if output_dir.exists() else []
+        assert zips == [], f"No ZIP should exist on validation failure, found: {zips}"
+
+    def test_invalid_game_id_raises_data_validation_error(self, tmp_path: Path) -> None:
+        """game_id not matching regex raises DataValidationError."""
+        from gameplay_recorder.packaging.validation import DataValidationError
+        from gameplay_recorder.packaging.zipper import assemble_zip
+
+        session_dir = _make_session_dir(tmp_path)
+        meta = _make_meta(game_id="Bad Name!")
+        output_dir = tmp_path / "out"
+
+        with pytest.raises(DataValidationError):
+            assemble_zip(session_dir, meta, output_dir)
+
+    def test_invalid_screenshot_filename_raises_data_validation_error(self, tmp_path: Path) -> None:
+        """Screenshot file not matching 4-digit pattern raises DataValidationError."""
+        from gameplay_recorder.packaging.validation import DataValidationError
+        from gameplay_recorder.packaging.zipper import assemble_zip
+
+        session_dir = _make_session_dir(tmp_path)
+        # Add a screenshot with invalid name
+        (session_dir / "screenshots" / "bad_name.png").write_bytes(b"px")
+        meta = _make_meta()
+        output_dir = tmp_path / "out"
+
+        with pytest.raises(DataValidationError):
+            assemble_zip(session_dir, meta, output_dir)
+
+
+class TestZipValidationGameId:
+    """game_id validation at assemble_zip level."""
+
+    def test_valid_game_id_passes(self, tmp_path: Path) -> None:
+        """A game_id matching the regex succeeds."""
+        from gameplay_recorder.packaging.zipper import assemble_zip
+
+        session_dir = _make_session_dir(tmp_path)
+        meta = _make_meta(game_id="mobile_game_v2")
+        output_dir = tmp_path / "out"
+
+        result = assemble_zip(session_dir, meta, output_dir)
+        assert result.exists()

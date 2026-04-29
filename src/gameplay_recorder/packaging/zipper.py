@@ -13,7 +13,7 @@ Explicitly EXCLUDED (spec: "No perception.jsonl"):
   - perception.jsonl
 
 Naming conventions:
-  - Collision handling: appends _2, _3, … as needed.
+  - Collision handling: appends _2, _3, ... as needed.
   - Output directory auto-created if it does not exist.
 
 Data integrity guardrail:
@@ -21,18 +21,29 @@ Data integrity guardrail:
   - No hardcoded game-package names.
   - Metadata comes entirely from the SessionMeta passed in.
 
-TODO Phase 9: replace placeholder "trust everything" filter with real data
-validation that validates events.jsonl schema before packaging.
+Phase 9: Schema validation is applied before packaging:
+  - game_id is validated against the spec regex.
+  - events.jsonl is validated line-by-line (5-field whitelist).
+  - Screenshot filenames are validated against 4-digit pattern.
+  - DataValidationError is raised on any violation; events.rejected.jsonl
+    is written to output_dir for local debugging.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import zipfile
 from pathlib import Path
 
 from gameplay_recorder.models.session import SessionMeta
 from gameplay_recorder.packaging.metadata import write_meta
+from gameplay_recorder.packaging.validation import (
+    DataValidationError,
+    validate_events_file,
+    validate_game_id,
+    validate_screenshot_filename,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +59,7 @@ def _build_zip_name(meta: SessionMeta) -> str:
 
     Example:
         started_at="2026-04-28T14:00:00Z"
-        → my_game_v1.32.1_alice_2026-04-28_140000.zip
+        -> my_game_v1.32.1_alice_2026-04-28_140000.zip
     """
     # Parse started_at: "2026-04-28T14:00:00Z"
     date_part, time_raw = meta.started_at.split("T")
@@ -60,7 +71,7 @@ def _build_zip_name(meta: SessionMeta) -> str:
 def _resolve_output_path(output_dir: Path, base_name: str) -> Path:
     """Return a non-colliding path for the ZIP in output_dir.
 
-    If base_name already exists, tries base_name_2.zip, _3.zip, … until free.
+    If base_name already exists, tries base_name_2.zip, _3.zip, ... until free.
 
     Args:
         output_dir: Directory where the ZIP will be saved.
@@ -82,6 +93,34 @@ def _resolve_output_path(output_dir: Path, base_name: str) -> Path:
         counter += 1
 
 
+def _write_rejected_jsonl(output_dir: Path, violations: list[dict[str, object]]) -> Path:
+    """Write events.rejected.jsonl to output_dir for local debugging.
+
+    The file is a single JSON object (not JSONL) summarising all violations.
+    It is NOT included in any ZIP — it stays as a sibling file in output_dir.
+
+    Args:
+        output_dir:  Directory where the rejected file will be saved.
+        violations:  List of violation dicts from validate_events_file.
+
+    Returns:
+        Path to the written file.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    rejected_path = output_dir / "events.rejected.jsonl"
+    payload = {
+        "violation_count": len(violations),
+        "violations": violations,
+    }
+    rejected_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    logger.warning(
+        "assemble_zip: validation failed — %d violations written to %s",
+        len(violations),
+        rejected_path,
+    )
+    return rejected_path
+
+
 def assemble_zip(
     session_dir: Path,
     meta: SessionMeta,
@@ -89,16 +128,18 @@ def assemble_zip(
 ) -> Path:
     """Package a session directory into a named ZIP file.
 
-    Steps:
-    1. Resolve (and create) output_dir.
-    2. Determine non-colliding ZIP filename.
-    3. Write session_meta.json into a temp location inside session_dir.
-    4. Assemble ZIP with: session_meta.json, gameplay.mp4, events.jsonl, screenshots/*.
-    5. Explicitly exclude perception.jsonl and any other unlisted file.
+    Phase 9 validation (runs BEFORE any ZIP is written):
+      1. Validate game_id against spec regex.
+      2. Validate events.jsonl line-by-line (5-field whitelist).
+      3. Validate screenshot filenames (4-digit .png pattern).
+      On any failure: write events.rejected.jsonl to output_dir; raise DataValidationError.
 
-    Data validation (Phase 9 placeholder):
-      events.jsonl is included as-is. Phase 9 wires schema validation here.
-      # TODO Phase 9: replace with validate_events_file(session_dir / "events.jsonl")
+    Assembly steps (only reached if validation passes):
+      1. Resolve (and create) output_dir.
+      2. Determine non-colliding ZIP filename.
+      3. Write session_meta.json into session_dir.
+      4. Assemble ZIP: session_meta.json, gameplay.mp4, events.jsonl, screenshots/*.
+      5. Exclude perception.jsonl and any unlisted file.
 
     Args:
         session_dir: Directory containing the session files produced by capture workers.
@@ -109,10 +150,44 @@ def assemble_zip(
         Path to the written ZIP file.
 
     Raises:
+        DataValidationError: If game_id, events.jsonl, or screenshot filenames fail validation.
         FileNotFoundError: If gameplay.mp4 or events.jsonl are missing from session_dir.
     """
     session_dir = Path(session_dir)
     output_dir = Path(output_dir)
+
+    # ── Phase 9: Pre-packaging validation ─────────────────────────────────────
+
+    # 1. Validate game_id
+    ok, reason = validate_game_id(meta.game_id)
+    if not ok:
+        raise DataValidationError(f"Invalid game_id {meta.game_id!r}: {reason}")
+
+    # 2. Validate events.jsonl
+    events_path = session_dir / "events.jsonl"
+    if events_path.exists():
+        valid, violations = validate_events_file(events_path)
+        if not valid:
+            _write_rejected_jsonl(output_dir, violations)
+            raise DataValidationError(
+                f"events.jsonl has {len(violations)} validation violation(s). "
+                f"See {output_dir / 'events.rejected.jsonl'} for details."
+            )
+
+    # 3. Validate screenshot filenames
+    screenshots_dir = session_dir / "screenshots"
+    if screenshots_dir.exists():
+        bad_screenshots = [
+            png.name
+            for png in screenshots_dir.iterdir()
+            if png.is_file() and not validate_screenshot_filename(png.name)
+        ]
+        if bad_screenshots:
+            raise DataValidationError(
+                f"Invalid screenshot filename(s) (expected 4-digit .png): {bad_screenshots}"
+            )
+
+    # ── Assembly ───────────────────────────────────────────────────────────────
 
     # 1. Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -136,16 +211,13 @@ def assemble_zip(
         else:
             logger.warning("assemble_zip: gameplay.mp4 not found in %s", session_dir)
 
-        # events.jsonl
-        # TODO Phase 9: validate events.jsonl with IPFirewall before including
-        events = session_dir / "events.jsonl"
-        if events.exists():
-            zf.write(events, arcname="events.jsonl")
+        # events.jsonl (already validated above)
+        if events_path.exists():
+            zf.write(events_path, arcname="events.jsonl")
         else:
             logger.warning("assemble_zip: events.jsonl not found in %s", session_dir)
 
         # screenshots/ — include all files, preserving the screenshots/ prefix
-        screenshots_dir = session_dir / "screenshots"
         if screenshots_dir.exists():
             for png in sorted(screenshots_dir.iterdir()):
                 if png.is_file() and png.name not in _EXCLUDED_FILES:
