@@ -16,8 +16,8 @@ Naming conventions:
   - Collision handling: appends _2, _3, ... as needed.
   - Output directory auto-created if it does not exist.
 
-Data integrity guardrail:
-  - No consumer-system imports.
+IP-leak guardrail:
+  - No bot_neuronal imports.
   - No hardcoded game-package names.
   - Metadata comes entirely from the SessionMeta passed in.
 
@@ -59,7 +59,7 @@ def _build_zip_name(meta: SessionMeta) -> str:
 
     Example:
         started_at="2026-04-28T14:00:00Z"
-        -> my_game_v1.32.1_alice_2026-04-28_140000.zip
+        -> zombie_gore_v1.32.1_alice_2026-04-28_140000.zip
     """
     # Parse started_at: "2026-04-28T14:00:00Z"
     date_part, time_raw = meta.started_at.split("T")

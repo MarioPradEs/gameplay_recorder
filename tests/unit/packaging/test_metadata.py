@@ -16,7 +16,7 @@ from gameplay_recorder.models.session import SessionMeta
 def _make_meta(**overrides) -> SessionMeta:
     """Helper: build a valid SessionMeta, optionally overriding fields."""
     defaults = dict(
-        game_id="my_game",
+        game_id="zombie_gore",
         game_version="1.32.1",
         recorded_by="alice",
         started_at="2026-04-28T14:00:00Z",
@@ -94,7 +94,7 @@ class TestSerializeMeta:
         meta = _make_meta()
         result = serialize_meta(meta)
 
-        assert result["game_id"] == "my_game"
+        assert result["game_id"] == "zombie_gore"
         assert result["game_version"] == "1.32.1"
         assert result["recorded_by"] == "alice"
         assert result["started_at"] == "2026-04-28T14:00:00Z"

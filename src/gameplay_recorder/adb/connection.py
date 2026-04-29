@@ -2,7 +2,7 @@
 
 Provides device discovery, screencap, and getevent streaming.
 Intentionally excludes ALL input-injection methods (tap, swipe, etc.) to prevent
-any private consumer-system IP from leaking into the public repo.
+any private bot-neuronal IP from leaking into the public repo.
 
 Depends only on adbutils. No numpy, PIL, or OpenCV.
 """

@@ -1,7 +1,7 @@
 """Domain model: a single raw touch event from the kernel input subsystem.
 
 Each instance represents one parsed event from `adb shell getevent -l -t`.
-Only the 5 public fields are kept — no ML/consumer-system-specific fields.
+Only the 5 public fields are kept — no ML/bot-neuronal-specific fields.
 """
 
 from __future__ import annotations

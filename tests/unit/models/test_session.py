@@ -15,7 +15,7 @@ from gameplay_recorder.models.session import RecordingState, SessionMeta
 # ---------------------------------------------------------------------------
 
 VALID_META = dict(
-    game_id="my_game",
+    game_id="zombie_gore",
     game_version="1.32.1",
     recorded_by="alice",
     started_at="2026-04-28T14:00:00Z",
@@ -55,7 +55,7 @@ class TestSessionMetaFieldValues:
 
     def test_game_id_stored(self):
         meta = SessionMeta(**VALID_META)
-        assert meta.game_id == "my_game"
+        assert meta.game_id == "zombie_gore"
 
     def test_game_version_stored(self):
         meta = SessionMeta(**VALID_META)
