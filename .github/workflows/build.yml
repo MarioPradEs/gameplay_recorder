@@ -1,0 +1,65 @@
+name: Build
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            spec: installer/gameplay_recorder_win.spec
+            ffmpeg_url: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl.zip
+            ffmpeg_archive: ffmpeg.zip
+            ffmpeg_extract_cmd: >-
+              7z e ffmpeg.zip
+              "ffmpeg-master-latest-win64-lgpl/bin/ffmpeg.exe"
+              -o"resources/ffmpeg" -y
+          - os: macos-latest
+            spec: installer/gameplay_recorder_mac.spec
+            ffmpeg_url: https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip
+            ffmpeg_archive: ffmpeg.zip
+            ffmpeg_extract_cmd: >-
+              unzip -j ffmpeg.zip ffmpeg -d resources/ffmpeg
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -e "." "pyinstaller>=6.0"
+
+      - name: Download bundled ffmpeg
+        # NOTE: ffmpeg URLs are best-effort at time of writing and may need
+        # tuning post-launch if upstream release naming conventions change.
+        run: |
+          curl -L "${{ matrix.ffmpeg_url }}" -o "${{ matrix.ffmpeg_archive }}"
+          ${{ matrix.ffmpeg_extract_cmd }}
+
+      - name: Build with PyInstaller
+        run: pyinstaller ${{ matrix.spec }} --noconfirm
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gameplay_recorder-${{ matrix.os }}
+          path: dist/gameplay_recorder/
+
+      - name: Attach to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/gameplay_recorder/**
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
