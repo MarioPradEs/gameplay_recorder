@@ -34,14 +34,17 @@ class SessionMeta:
     schema_version: str = field(default="1")
 
 
-class RecordingState(enum.Enum):
+class RecordingState(enum.IntEnum):
     """States for the GUI state machine.
 
     Spec: Requirement "GUI State Machine" — exactly 4 states.
     Transitions: IDLE -> RECORDING -> PACKAGING -> DONE -> IDLE.
+
+    Values are integers matching QStackedWidget page indices so that
+    ``stacked.currentIndex() == RecordingState.IDLE.value`` holds.
     """
 
-    IDLE = "idle"
-    RECORDING = "recording"
-    PACKAGING = "packaging"
-    DONE = "done"
+    IDLE = 0
+    RECORDING = 1
+    PACKAGING = 2
+    DONE = 3
