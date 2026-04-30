@@ -1020,7 +1020,10 @@ def test_recording_error_is_logged_with_full_message(qtbot, caplog):
     window = MainWindow()
     qtbot.addWidget(window)
 
-    long_error = "AdbCommandError: device 'emulator-5554' not found; adb -s emulator-5554 shell screenrecord: exit 1"
+    long_error = (
+        "AdbCommandError: device 'emulator-5554' not found; "
+        "adb -s emulator-5554 shell screenrecord: exit 1"
+    )
 
     with caplog.at_level(logging.ERROR, logger="gameplay_recorder.ui.main_window"):
         window._on_recording_error(long_error)

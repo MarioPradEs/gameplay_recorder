@@ -417,8 +417,6 @@ def test_run_terminates_proc_on_interruption_within_2s():
 
     Spec: Requirement 'Segmented Video Capture' — graceful stop.
     """
-    import subprocess
-    import threading
     import time
 
     from gameplay_recorder.capture.video_recorder import VideoSegmentRecorder
