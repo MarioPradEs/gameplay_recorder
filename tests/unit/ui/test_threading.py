@@ -12,13 +12,12 @@ Spec references:
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from gameplay_recorder.models.session import RecordingState
 from gameplay_recorder.ui.main_window import MainWindow
-
 
 # ---------------------------------------------------------------------------
 # Test 1: clicking Record button starts the VideoSegmentRecorder worker
@@ -49,10 +48,9 @@ def test_record_button_click_starts_video_worker(qtbot):
         patch(
             "gameplay_recorder.ui.main_window.ScreenshotCapture",
             spec=True,
-        ) as MockSC,
+        ),
     ):
         mock_vsr_instance = MockVSR.return_value
-        mock_sc_instance = MockSC.return_value
 
         # Click the record button
         qtbot.mouseClick(
@@ -96,11 +94,10 @@ def test_stop_button_click_stops_workers(qtbot):
         patch(
             "gameplay_recorder.ui.main_window.PackagingWorker",
             spec=True,
-        ) as MockPW,
+        ),
     ):
         mock_vsr_instance = MockVSR.return_value
         mock_sc_instance = MockSC.return_value
-        mock_pw_instance = MockPW.return_value
 
         # Start recording first
         qtbot.mouseClick(
@@ -142,11 +139,11 @@ def test_packaging_worker_started_after_stop(qtbot):
         patch(
             "gameplay_recorder.ui.main_window.VideoSegmentRecorder",
             spec=True,
-        ) as MockVSR,
+        ),
         patch(
             "gameplay_recorder.ui.main_window.ScreenshotCapture",
             spec=True,
-        ) as MockSC,
+        ),
         patch(
             "gameplay_recorder.ui.main_window.PackagingWorker",
             spec=True,

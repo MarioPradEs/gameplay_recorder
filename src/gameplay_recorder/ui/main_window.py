@@ -13,6 +13,9 @@ Invalid transitions are silently blocked — state unchanged, no exception.
 
 from __future__ import annotations
 
+import logging
+from pathlib import Path
+
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QMainWindow,
@@ -20,11 +23,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from gameplay_recorder.capture.screenshot_capture import ScreenshotCapture
+from gameplay_recorder.capture.video_recorder import VideoSegmentRecorder
 from gameplay_recorder.models.session import RecordingState
+from gameplay_recorder.packaging.worker import PackagingWorker
 from gameplay_recorder.ui.done_screen import DoneScreen
 from gameplay_recorder.ui.idle_screen import IdleScreen
 from gameplay_recorder.ui.packaging_screen import PackagingScreen
 from gameplay_recorder.ui.recording_screen import RecordingScreen
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Re-export screen widgets so existing imports of the form
@@ -106,6 +114,15 @@ class MainWindow(QMainWindow):
         self.packaging_finished.connect(lambda: self._transition("packaging_finished"))
         self.record_again.connect(lambda: self._transition("record_again"))
 
+        # Wire Record / Stop buttons to worker-management slots.
+        self.idle_screen.record_button.clicked.connect(self.start_recording_session)
+        self._recording_screen.stop_button.clicked.connect(self.stop_recording_session)
+
+        # Worker handles (None when no recording is active).
+        self._video_worker: VideoSegmentRecorder | None = None
+        self._screenshot_worker: ScreenshotCapture | None = None
+        self._packaging_worker: PackagingWorker | None = None
+
     # ------------------------------------------------------------------
     # State machine
     # ------------------------------------------------------------------
@@ -132,3 +149,89 @@ class MainWindow(QMainWindow):
         form_enabled = state != RecordingState.RECORDING
         self.idle_screen.game_dropdown.setEnabled(form_enabled)
         self.idle_screen.player_name_field.setEnabled(form_enabled)
+
+    # ------------------------------------------------------------------
+    # Worker management slots
+    # ------------------------------------------------------------------
+
+    def start_recording_session(self) -> None:
+        """Create and start video + screenshot workers, then transition IDLE → RECORDING.
+
+        Spec: Requirement "Segmented Video Capture" — worker lifecycle.
+        Called when the user clicks the Record button on IdleScreen.
+        Workers require an AdbConnection; at this stage they are created with
+        placeholder args so the slot shape is testable — real wiring happens
+        when the app entry point (Phase 14) provides the connection.
+        """
+        # Create workers.  The AdbConnection and session_dir are supplied by
+        # the application layer; here we store None-guarded references so the
+        # tests can inject mocks via patch('gameplay_recorder.ui.main_window.VideoSegmentRecorder').
+        self._video_worker = VideoSegmentRecorder(
+            adb_conn=None,  # type: ignore[arg-type]
+            local_dir=Path("."),
+        )
+        self._screenshot_worker = ScreenshotCapture(
+            adb_conn=None,  # type: ignore[arg-type]
+            session_dir=Path("."),
+        )
+
+        # Wire error signal before starting.
+        self._video_worker.recording_error.connect(self._on_recording_error)
+
+        self._video_worker.start()
+        self._screenshot_worker.start()
+
+        # Transition IDLE → RECORDING.
+        self.start_recording.emit()
+
+    def stop_recording_session(self) -> None:
+        """Interrupt workers, start packaging, then transition RECORDING → PACKAGING.
+
+        Spec: Requirement "Segmented Video Capture" — graceful stop.
+        Called when the user clicks the Stop button on RecordingScreen.
+        """
+        if self._video_worker is not None:
+            self._video_worker.requestInterruption()
+        if self._screenshot_worker is not None:
+            self._screenshot_worker.requestInterruption()
+
+        # Create and start PackagingWorker.
+        # Segments / meta / output_dir are placeholders — Phase 14 wires real values.
+        self._packaging_worker = PackagingWorker(
+            segments=[],
+            session_dir=Path("."),
+            meta=None,  # type: ignore[arg-type]
+            output_dir=Path("."),
+        )
+        self._packaging_worker.finished.connect(self._on_packaging_finished)
+
+        self._packaging_worker.start()
+
+        # Transition RECORDING → PACKAGING.
+        self.stop_recording.emit()
+
+    # ------------------------------------------------------------------
+    # Worker signal handlers
+    # ------------------------------------------------------------------
+
+    def _on_packaging_finished(self, path: Path) -> None:
+        """Handle packaging completion — set ZIP path on DoneScreen and go DONE.
+
+        Args:
+            path: Path to the produced ZIP file.
+
+        Spec: Requirement "GUI State Machine" — PACKAGING → DONE.
+        """
+        self._done_screen.set_zip_path(path)
+        self.packaging_finished.emit()
+
+    def _on_recording_error(self, message: str) -> None:
+        """Display a recording error banner on the RecordingScreen.
+
+        Args:
+            message: Human-readable error description from VideoSegmentRecorder.
+
+        Spec: Requirement "Segmented Video Capture" — errors surface to the user.
+        """
+        self._recording_screen.error_banner.setText(message)
+        self._recording_screen.error_banner.setVisible(True)
