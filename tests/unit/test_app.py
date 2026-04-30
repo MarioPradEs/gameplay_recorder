@@ -10,10 +10,10 @@ Spec references:
 from __future__ import annotations
 
 import pytest
-from gameplay_recorder.app import create_app
-from gameplay_recorder.ui.main_window import MainWindow
 from PySide6.QtWidgets import QApplication
 
+from gameplay_recorder.app import create_app
+from gameplay_recorder.ui.main_window import MainWindow
 
 # ---------------------------------------------------------------------------
 # create_app() — returns QApplication
