@@ -58,7 +58,13 @@ def main() -> int:
 
     Spec: Requirement "Auto-Update Check" — the check is fire-and-forget;
     network failures are silently swallowed.
+    Phase 14d.1: Configures root logger so all module loggers write to stdout.
     """
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+
     app = create_app(sys.argv)
 
     window = MainWindow()
