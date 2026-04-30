@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtWidgets import QLabel
+
 from gameplay_recorder.ui.done_screen import DoneScreen
 from gameplay_recorder.ui.idle_screen import IdleScreen
 from gameplay_recorder.ui.recording_screen import RecordingScreen
@@ -31,16 +32,21 @@ from gameplay_recorder.ui.recording_screen import RecordingScreen
 
 @pytest.mark.gui
 def test_idle_screen_has_game_dropdown(qtbot):
-    """IdleScreen exposes a QComboBox with 'zombie_gore' as an entry.
+    """IdleScreen exposes a QComboBox with 'Zombie Gore' as display text and 'zombie_gore' as data.
 
     Spec: Requirement "GUI State Machine" — IDLE state UI has a game dropdown.
+    Phase 14b: display text is human-readable; internal data (game_id) stays snake_case.
     """
     screen = IdleScreen()
     qtbot.addWidget(screen)
 
     assert screen.game_dropdown is not None
-    items = [screen.game_dropdown.itemText(i) for i in range(screen.game_dropdown.count())]
-    assert "zombie_gore" in items
+    # Display text must be human-readable
+    items_text = [screen.game_dropdown.itemText(i) for i in range(screen.game_dropdown.count())]
+    assert "Zombie Gore" in items_text
+    # Internal data (game_id sent to session_meta.json) must remain snake_case
+    items_data = [screen.game_dropdown.itemData(i) for i in range(screen.game_dropdown.count())]
+    assert "zombie_gore" in items_data
 
 
 # ---------------------------------------------------------------------------

@@ -1,13 +1,19 @@
 """Idle state screen widget.
 
 Spec: Requirement "GUI State Machine" — IDLE state.
-Exposes the game dropdown, player name field, Record button, and update banner.
+Exposes the game dropdown, version field, player name field, device status label,
+Record button, and update banner.
+
+Phase 14b: Rebuilt with QFormLayout for labels-on-left UX, display map for
+dropdown (Zombie Gore → zombie_gore), tooltips on all form fields, and
+device_status_label that reflects the connected device serial.
 """
 
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
     QComboBox,
+    QFormLayout,
     QLabel,
     QLineEdit,
     QPushButton,
@@ -38,12 +44,33 @@ class _BannerLabel(QLabel):
         return self._explicitly_visible
 
 
+#: Maps game_id (snake_case, stored in session_meta.json) → display name (human-readable).
+#: DO NOT use currentText() as the game_id — always use currentData().
+_GAME_DISPLAY_MAP: list[tuple[str, str]] = [
+    ("zombie_gore", "Zombie Gore"),
+]
+
+
 class IdleScreen(QWidget):
     """Idle state screen — game form, Record button, and optional update banner.
 
+    Layout (QFormLayout with labels on the left):
+        update_banner   — full-width banner (outside the form, at the top)
+        Game:           | game_dropdown
+        Version:        | version_field
+        Player:         | player_name_field
+        Device:         | device_status_label
+        (empty)         | record_button
+
     Attributes:
-        game_dropdown (QComboBox): game selector.
-        player_name_field (QLineEdit): player name input.
+        game_dropdown (QComboBox): game selector.  ``currentText()`` returns the
+            human-readable display name (e.g. "Zombie Gore"); ``currentData()``
+            returns the snake_case ``game_id`` (e.g. ``"zombie_gore"``) that is
+            persisted in ``session_meta.json``.
+        version_field (QLineEdit): free-text game version input.
+        player_name_field (QLineEdit): player name / alias input.
+        device_status_label (QLabel): shows the connected device serial or
+            "No device connected" when no device is available.
         record_button (QPushButton): starts recording; disabled until a valid
             device serial is set via :meth:`set_device_status`.
         update_banner (_BannerLabel): version-update notification; hidden by
@@ -54,38 +81,79 @@ class IdleScreen(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
 
-        # Widgets
+        # ── Banner (outside form layout, spans full width) ─────────────────
         self.update_banner = _BannerLabel("", self)
         self.update_banner.setVisible(False)
 
+        # ── Form widgets ────────────────────────────────────────────────────
         self.game_dropdown = QComboBox(self)
-        self.game_dropdown.addItem("zombie_gore")
+        for game_id, display_name in _GAME_DISPLAY_MAP:
+            self.game_dropdown.addItem(display_name, userData=game_id)
+        self.game_dropdown.setToolTip(
+            "The game you are recording. The selected game's id is saved in session_meta.json."
+        )
+
+        self.version_field = QLineEdit(self)
+        self.version_field.setPlaceholderText("e.g. 1.32.1")
+        self.version_field.setToolTip(
+            "The version of the game shown on the title screen (free text). Example: 1.32.1"
+        )
 
         self.player_name_field = QLineEdit(self)
+        self.player_name_field.setPlaceholderText("Your name")
+        self.player_name_field.setToolTip(
+            "Your name or alias — saved as recorded_by in session_meta.json "
+            "so we know who recorded this session."
+        )
+
+        self.device_status_label = QLabel("No device connected", self)
 
         self.record_button = QPushButton("Record", self)
         self.record_button.setEnabled(False)  # requires a device
 
-        # Layout
-        layout = QVBoxLayout(self)
-        layout.addWidget(self.update_banner)
-        layout.addWidget(self.game_dropdown)
-        layout.addWidget(self.player_name_field)
-        layout.addWidget(self.record_button)
-        self.setLayout(layout)
+        # ── Layout ──────────────────────────────────────────────────────────
+        form = QFormLayout()
+        form.addRow("Game:", self.game_dropdown)
+        form.addRow("Version:", self.version_field)
+        form.addRow("Player:", self.player_name_field)
+        form.addRow("Device:", self.device_status_label)
+        form.addRow("", self.record_button)
+
+        root = QVBoxLayout(self)
+        root.addWidget(self.update_banner)
+        root.addLayout(form)
+        self.setLayout(root)
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
+    def selected_game_id(self) -> str:
+        """Return the snake_case game_id for the currently selected game.
+
+        Always use this (or ``game_dropdown.currentData()``) as the source for
+        ``game_id`` in ``session_meta.json`` — NEVER use ``currentText()``.
+
+        Returns:
+            The snake_case game identifier (e.g. ``"zombie_gore"``).
+        """
+        return self.game_dropdown.currentData()
+
     def set_device_status(self, serial: str | None) -> None:
-        """Enable or disable the Record button based on device availability.
+        """Update the device status label and enable/disable the Record button.
 
         Args:
-            serial: A non-empty device serial string means the device is ready;
-                ``None`` means no device — button is disabled.
+            serial: A non-empty device serial string means the device is ready
+                (label set to ``"Device: {serial}"``; Record button enabled).
+                ``None`` means no device — label reset to ``"No device connected"``;
+                Record button disabled.
         """
-        self.record_button.setEnabled(serial is not None)
+        if serial is not None:
+            self.device_status_label.setText(f"Device: {serial}")
+            self.record_button.setEnabled(True)
+        else:
+            self.device_status_label.setText("No device connected")
+            self.record_button.setEnabled(False)
 
     def set_update_available(self, version: str | None) -> None:
         """Show or hide the update banner.
