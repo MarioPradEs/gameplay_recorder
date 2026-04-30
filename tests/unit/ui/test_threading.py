@@ -1,4 +1,4 @@
-"""RED phase — Phase 13.1 + Phase 14c.1/14c.3 + Phase 14d.2/14d.3/14d.5: UI Threading / Worker Wiring tests.
+"""RED phase — Phase 13.1 + 14c.1/14c.3 + 14d.2/14d.3/14d.5: UI Threading / Worker Wiring tests.
 
 Tests that MainWindow correctly creates, starts, and wires QThread workers
 when the user clicks Record and Stop.
@@ -13,10 +13,8 @@ Spec references:
 
 from __future__ import annotations
 
-import os
 import re
 import sys
-import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -847,8 +845,6 @@ def test_segment_finished_signal_increments_counter(qtbot):
     - After emitting segment_finished(1, fake_path): label shows "Segment: 1"
       or "Segments: 1" (any text reflecting count=1).
     """
-    from gameplay_recorder.capture.video_recorder import VideoSegmentRecorder
-
     window = MainWindow()
     qtbot.addWidget(window)
 
@@ -856,9 +852,9 @@ def test_segment_finished_signal_increments_counter(qtbot):
     window.idle_screen.version_field.setText("1.0.0")
     window.idle_screen.player_name_field.setText("tester")
 
-    mock_vsr_instance = MagicMock(spec=VideoSegmentRecorder)
     # We need the real signal for segment_finished — use a real QObject with signals
-    from PySide6.QtCore import QObject, Signal as QSignal
+    from PySide6.QtCore import QObject
+    from PySide6.QtCore import Signal as QSignal
 
     class FakeWorker(QObject):
         segment_started = QSignal(int)
@@ -866,6 +862,9 @@ def test_segment_finished_signal_increments_counter(qtbot):
         recording_error = QSignal(str)
 
         def requestInterruption(self):
+            pass
+
+        def start(self):
             pass
 
         @property
@@ -939,8 +938,6 @@ def test_open_folder_button_calls_os_startfile(qtbot):
             qtbot.mouseClick(window._done_screen._open_folder_button, Qt_LeftButton)
             mock_startfile.assert_called_once_with(zip_path.parent)
     else:
-        import subprocess
-
         with patch("subprocess.run") as mock_run:
             qtbot.mouseClick(window._done_screen._open_folder_button, Qt_LeftButton)
             mock_run.assert_called_once_with(["open", "-R", str(zip_path)])

@@ -187,6 +187,22 @@ def assemble_zip(
                 f"Invalid screenshot filename(s) (expected 4-digit .png): {bad_screenshots}"
             )
 
+    # ── Required file presence check (before any ZIP is written) ──────────────
+
+    gameplay = session_dir / "gameplay.mp4"
+    if not gameplay.exists():
+        raise FileNotFoundError(
+            f"assemble_zip: gameplay.mp4 not found in {session_dir}. "
+            "Recording may have failed — no video segments were produced."
+        )
+
+    events_path_check = session_dir / "events.jsonl"
+    if not events_path_check.exists():
+        raise FileNotFoundError(
+            f"assemble_zip: events.jsonl not found in {session_dir}. "
+            "TouchEventMonitor may not have been started."
+        )
+
     # ── Assembly ───────────────────────────────────────────────────────────────
 
     # 1. Ensure output directory exists
@@ -204,18 +220,11 @@ def assemble_zip(
         # session_meta.json
         zf.write(meta_file, arcname="session_meta.json")
 
-        # gameplay.mp4
-        gameplay = session_dir / "gameplay.mp4"
-        if gameplay.exists():
-            zf.write(gameplay, arcname="gameplay.mp4")
-        else:
-            logger.warning("assemble_zip: gameplay.mp4 not found in %s", session_dir)
+        # gameplay.mp4 — presence guaranteed by required-file check above
+        zf.write(gameplay, arcname="gameplay.mp4")
 
-        # events.jsonl (already validated above)
-        if events_path.exists():
-            zf.write(events_path, arcname="events.jsonl")
-        else:
-            logger.warning("assemble_zip: events.jsonl not found in %s", session_dir)
+        # events.jsonl — presence guaranteed by required-file check above
+        zf.write(events_path, arcname="events.jsonl")
 
         # screenshots/ — include all files, preserving the screenshots/ prefix
         if screenshots_dir.exists():

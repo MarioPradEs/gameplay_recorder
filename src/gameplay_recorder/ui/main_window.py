@@ -14,11 +14,12 @@ Invalid transitions are silently blocked — state unchanged, no exception.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import (
     QMainWindow,
     QStackedWidget,
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from gameplay_recorder.adb.connection import AdbConnection
+from gameplay_recorder.capture.event_monitor import TouchEventMonitor
 from gameplay_recorder.capture.screenshot_capture import ScreenshotCapture
 from gameplay_recorder.capture.video_recorder import VideoSegmentRecorder
 from gameplay_recorder.config import DEFAULT_OUTPUT_DIR, SCREENSHOT_INTERVAL_S, SEGMENT_DURATION_S
@@ -125,6 +127,7 @@ class MainWindow(QMainWindow):
         # Worker handles (None when no recording is active).
         self._video_worker: VideoSegmentRecorder | None = None
         self._screenshot_worker: ScreenshotCapture | None = None
+        self._event_monitor: TouchEventMonitor | None = None
         self._packaging_worker: PackagingWorker | None = None
 
         # Session state (populated by start_recording_session, used by stop).
@@ -132,6 +135,16 @@ class MainWindow(QMainWindow):
         self._session_dir: Path | None = None
         self._meta: SessionMeta | None = None
         self._start_time: float | None = None
+        self._stop_event: threading.Event | None = None
+
+        # Elapsed timer — ticks every second during RECORDING.
+        self._elapsed_timer = QTimer(self)
+        self._elapsed_timer.setInterval(1000)
+        self._elapsed_timer.timeout.connect(self._on_timer_tick)
+
+        # Wire DoneScreen buttons.
+        self._done_screen.open_folder_button.clicked.connect(self._on_open_folder)
+        self._done_screen.record_again_button.clicked.connect(self.record_again.emit)
 
     # ------------------------------------------------------------------
     # State machine
@@ -228,9 +241,22 @@ class MainWindow(QMainWindow):
 
         # Wire error signal before starting.
         self._video_worker.recording_error.connect(self._on_recording_error)
+        # Wire segment_finished to update the segment counter.
+        self._video_worker.segment_finished.connect(self._on_segment_finished)
+
+        # Create and start TouchEventMonitor (writes events.jsonl).
+        self._stop_event = threading.Event()
+        self._event_monitor = TouchEventMonitor(
+            adb=self._adb_conn,
+            stop_event=self._stop_event,
+        )
+        self._event_monitor.start()
 
         self._video_worker.start()
         self._screenshot_worker.start()
+
+        # Start elapsed timer.
+        self._elapsed_timer.start()
 
         # Transition IDLE → RECORDING.
         self.start_recording.emit()
@@ -245,6 +271,9 @@ class MainWindow(QMainWindow):
             self._video_worker.requestInterruption()
         if self._screenshot_worker is not None:
             self._screenshot_worker.requestInterruption()
+        if self._stop_event is not None:
+            self._stop_event.set()
+        self._elapsed_timer.stop()
 
         # Update duration now that the session is ending.
         if self._meta is not None and self._start_time is not None:
@@ -316,3 +345,49 @@ class MainWindow(QMainWindow):
         self._apply_state(RecordingState.IDLE)
         # Show error banner on IdleScreen so the user knows what went wrong.
         self.idle_screen.show_error_banner(message)
+
+    def _on_timer_tick(self) -> None:
+        """Update the elapsed timer label every second.
+
+        Phase 14d.3: Called by the QTimer timeout signal every 1000ms while
+        in RECORDING state.
+        """
+        if self._start_time is None:
+            return
+        elapsed = int(time.time() - self._start_time)
+        self._recording_screen.update_elapsed(elapsed)
+
+    def _on_segment_finished(self, index: int, path: object) -> None:
+        """Update the segment counter label when a segment is completed.
+
+        Args:
+            index: The segment index (0-based — 0 = first segment finished).
+            path:  The local Path of the pulled segment file.
+
+        Phase 14d.3: Connected to VideoSegmentRecorder.segment_finished.
+        Displays the segment index so the first emission (index=0) shows "Segment: 0",
+        second emission (index=1) shows "Segment: 1", etc.
+        """
+        self._recording_screen._segment_label.setText(f"Segment: {index}")
+
+    def _on_open_folder(self) -> None:
+        """Open the OS file manager at the ZIP's parent directory.
+
+        Phase 14d.5: Triggered by DoneScreen.open_folder_button.clicked.
+        Platform-specific:
+        - Windows: os.startfile(parent)
+        - macOS/Linux: subprocess.run(["open", "-R", str(path)])
+        """
+        import os
+        import subprocess
+        import sys
+
+        zip_path = self._done_screen._zip_path
+        if zip_path is None:
+            logger.warning("_on_open_folder: no zip_path set on DoneScreen")
+            return
+        parent = zip_path.parent
+        if sys.platform == "win32":
+            os.startfile(parent)
+        else:
+            subprocess.run(["open", "-R", str(zip_path)])
