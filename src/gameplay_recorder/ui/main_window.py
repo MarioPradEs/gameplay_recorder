@@ -15,59 +15,29 @@ from __future__ import annotations
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
-    QComboBox,
-    QLabel,
-    QLineEdit,
     QMainWindow,
     QStackedWidget,
     QWidget,
 )
 
 from gameplay_recorder.models.session import RecordingState
+from gameplay_recorder.ui.done_screen import DoneScreen
+from gameplay_recorder.ui.idle_screen import IdleScreen
+from gameplay_recorder.ui.packaging_screen import PackagingScreen
+from gameplay_recorder.ui.recording_screen import RecordingScreen
 
 # ---------------------------------------------------------------------------
-# Screen widgets (stubs — full implementation in Phase 12)
+# Re-export screen widgets so existing imports of the form
+# ``from gameplay_recorder.ui.main_window import IdleScreen`` continue to work.
 # ---------------------------------------------------------------------------
 
-
-class IdleScreen(QWidget):
-    """Idle state screen — game form and Record button.
-
-    Exposes:
-        game_dropdown (QComboBox): game selector; disabled during RECORDING.
-        player_name_field (QLineEdit): player name input; disabled during RECORDING.
-    """
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.game_dropdown = QComboBox(self)
-        self.game_dropdown.addItem("zombie_gore")
-        self.player_name_field = QLineEdit(self)
-
-
-class RecordingScreen(QWidget):
-    """Recording state screen — timer, segment counter, Stop button (Phase 12 stub)."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._label = QLabel("Recording…", self)
-
-
-class PackagingScreen(QWidget):
-    """Packaging state screen — progress indicator (Phase 12 stub)."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._label = QLabel("Packaging…", self)
-
-
-class DoneScreen(QWidget):
-    """Done state screen — ZIP path, Open Folder, Record Again (Phase 12 stub)."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._label = QLabel("Done.", self)
-
+__all__ = [
+    "DoneScreen",
+    "IdleScreen",
+    "MainWindow",
+    "PackagingScreen",
+    "RecordingScreen",
+]
 
 # ---------------------------------------------------------------------------
 # Transition table
