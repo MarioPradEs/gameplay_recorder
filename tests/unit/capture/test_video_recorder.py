@@ -6,6 +6,7 @@ All subprocess and ADB calls are mocked — no real devices or processes.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -373,3 +374,168 @@ def test_resolve_adb_uses_system_adb_when_no_meipass():
     finally:
         if original is not None:
             sys._MEIPASS = original
+
+
+# ---------------------------------------------------------------------------
+# Phase 14e.2 — RED: proc.wait() responsive interruption
+# ---------------------------------------------------------------------------
+
+
+class _FakeProcess:
+    """Fake subprocess.Popen that stays 'running' until terminate() is called."""
+
+    def __init__(self):
+        self._terminated = False
+        self.pid = 12345
+        self.returncode = None
+
+    def poll(self):
+        return 0 if self._terminated else None
+
+    def wait(self, timeout=None):
+        if self._terminated:
+            return 0
+        raise subprocess.TimeoutExpired("cmd", timeout)
+
+    def terminate(self):
+        self._terminated = True
+        self.returncode = -15
+
+    def kill(self):
+        self._terminated = True
+        self.returncode = -9
+
+
+def test_run_terminates_proc_on_interruption_within_2s():
+    """VideoSegmentRecorder.run() calls proc.terminate() within 2s of requestInterruption().
+
+    Phase 14e.2/14e.3: The old proc.wait() blocked for 170s. The new polling loop
+    checks isInterruptionRequested() every second and terminates the process promptly.
+
+    Verifies: after requesting interruption, terminate() is called on the fake process
+    within 2 seconds — not 170s.
+
+    Spec: Requirement 'Segmented Video Capture' — graceful stop.
+    """
+    import subprocess
+    import threading
+    import time
+
+    from gameplay_recorder.capture.video_recorder import VideoSegmentRecorder
+
+    fake_proc = _FakeProcess()
+    mock_conn = _make_mock_conn()
+    mock_conn._serial = "emulator-5554"
+
+    recorder = VideoSegmentRecorder(
+        adb_conn=mock_conn,
+        local_dir=Path("/tmp/segs"),
+        duration=170,
+    )
+
+    with (
+        patch(
+            "gameplay_recorder.capture.video_recorder._spawn_screenrecord",
+            return_value=fake_proc,
+        ),
+        patch(
+            "gameplay_recorder.capture.video_recorder.pull_and_delete",
+            return_value=Path("/tmp/segs/seg_0.mp4"),
+        ),
+    ):
+        # Start the worker thread
+        recorder.start()
+
+        # Give the thread a moment to enter the poll loop
+        time.sleep(0.1)
+
+        # Request interruption — worker should terminate proc within 2s
+        recorder.requestInterruption()
+
+        # Wait up to 2s for terminate() to be called
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            if fake_proc._terminated:
+                break
+            time.sleep(0.05)
+
+        recorder.wait()  # join the thread
+
+    assert fake_proc._terminated, (
+        "proc.terminate() must be called within 2s of requestInterruption() — "
+        "the polling loop is not working correctly"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Triangulation: proc.kill() path when terminate() hangs
+# ---------------------------------------------------------------------------
+
+
+def test_run_kills_proc_when_terminate_hangs():
+    """VideoSegmentRecorder.run() escalates to proc.kill() if terminate() doesn't
+    stop the process within 5 seconds.
+
+    Triangulation: exercises the proc.kill() escalation branch in the polling loop.
+    """
+    import subprocess
+    import time
+
+    from gameplay_recorder.capture.video_recorder import VideoSegmentRecorder
+
+    class _StubbornProcess(_FakeProcess):
+        """Like _FakeProcess but terminate() doesn't immediately flip _terminated."""
+
+        def __init__(self):
+            super().__init__()
+            self._kill_called = False
+
+        def terminate(self):
+            # Do NOT flip _terminated — simulate a process that ignores SIGTERM
+            self.returncode = -15
+
+        def wait(self, timeout=None):
+            if self._terminated:
+                return 0
+            raise subprocess.TimeoutExpired("cmd", timeout)
+
+        def kill(self):
+            self._terminated = True
+            self._kill_called = True
+            self.returncode = -9
+
+    stubborn_proc = _StubbornProcess()
+    mock_conn = _make_mock_conn()
+    mock_conn._serial = "emulator-5554"
+
+    recorder = VideoSegmentRecorder(
+        adb_conn=mock_conn,
+        local_dir=Path("/tmp/segs"),
+        duration=170,
+    )
+
+    with (
+        patch(
+            "gameplay_recorder.capture.video_recorder._spawn_screenrecord",
+            return_value=stubborn_proc,
+        ),
+        patch(
+            "gameplay_recorder.capture.video_recorder.pull_and_delete",
+            return_value=Path("/tmp/segs/seg_0.mp4"),
+        ),
+    ):
+        recorder.start()
+        time.sleep(0.1)
+        recorder.requestInterruption()
+
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            if stubborn_proc._kill_called:
+                break
+            time.sleep(0.05)
+
+        recorder.wait()
+
+    assert stubborn_proc._kill_called, (
+        "proc.kill() must be called when terminate() doesn't stop the process within 5s"
+    )
