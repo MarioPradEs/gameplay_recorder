@@ -543,3 +543,154 @@ def test_packaging_failure_returns_to_idle_with_error_banner(qtbot):
     assert window.idle_screen.game_dropdown.isEnabled(), (
         "game_dropdown must be re-enabled after returning to IDLE"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 14c-fix.1 — RED: AdbConnection.select_single_device() called before workers
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.gui
+def test_start_recording_connects_adb_before_passing_to_workers(qtbot):
+    """start_recording_session() MUST call AdbConnection.select_single_device() and
+    pass the resulting connected instance to workers; workers MUST NOT be created
+    if select_single_device() raises.
+
+    Phase 14c-fix: AdbConnection(serial) leaves _adb_device=None. Workers call
+    screencap()/shell() which call _ensure_device() → AdbCommandError. The fix:
+    replace AdbConnection(serial) with AdbConnection.select_single_device() so
+    _adb_device is set before the workers are instantiated.
+
+    Verifies (happy path):
+    1. AdbConnection.select_single_device() is called (not just AdbConnection(serial)).
+    2. The connected instance returned by select_single_device() is what is passed
+       to VideoSegmentRecorder and ScreenshotCapture as adb_conn.
+    3. Workers are instantiated AFTER select_single_device() returns (i.e. connection
+       precedes worker creation).
+
+    Verifies (error path):
+    4. If select_single_device() raises any exception, VideoSegmentRecorder and
+       ScreenshotCapture are NOT instantiated.
+    5. The window stays in IDLE state after the connection failure.
+    6. idle_screen.show_error_banner() is called with a message containing
+       "ADB connection failed".
+    """
+    from gameplay_recorder.adb.connection import AdbConnection, NoDeviceConnectedError
+
+    # ── Happy path ─────────────────────────────────────────────────────────────
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    window.idle_screen.set_device_status("EMU-1")
+    window.idle_screen.version_field.setText("1.0.0")
+    window.idle_screen.player_name_field.setText("tester")
+
+    mock_conn = MagicMock(spec=AdbConnection)
+    call_order: list[str] = []
+
+    def _track_select(*args, **kwargs):
+        call_order.append("select_single_device")
+        return mock_conn
+
+    def _track_vsr(*args, **kwargs):
+        call_order.append("VideoSegmentRecorder")
+        return MagicMock()
+
+    def _track_sc(*args, **kwargs):
+        call_order.append("ScreenshotCapture")
+        return MagicMock()
+
+    with (
+        patch(
+            "gameplay_recorder.ui.main_window.AdbConnection",
+        ) as MockAdbConn,
+        patch(
+            "gameplay_recorder.ui.main_window.VideoSegmentRecorder",
+            spec=True,
+            side_effect=_track_vsr,
+        ) as MockVSR,
+        patch(
+            "gameplay_recorder.ui.main_window.ScreenshotCapture",
+            spec=True,
+            side_effect=_track_sc,
+        ) as MockSC,
+        patch("gameplay_recorder.ui.main_window.PackagingWorker", spec=True),
+    ):
+        MockAdbConn.select_single_device.side_effect = _track_select
+
+        qtbot.mouseClick(
+            window.idle_screen.record_button,
+            __import__("PySide6.QtCore", fromlist=["Qt"]).Qt.LeftButton,
+        )
+
+        # 1. select_single_device must have been called
+        MockAdbConn.select_single_device.assert_called_once()
+
+        # 2. Workers receive the connected instance from select_single_device
+        vsr_kwargs = MockVSR.call_args.kwargs
+        sc_kwargs = MockSC.call_args.kwargs
+        assert vsr_kwargs.get("adb_conn") is mock_conn, (
+            f"VideoSegmentRecorder.adb_conn must be the connected instance, "
+            f"got {vsr_kwargs.get('adb_conn')!r}"
+        )
+        assert sc_kwargs.get("adb_conn") is mock_conn, (
+            f"ScreenshotCapture.adb_conn must be the connected instance, "
+            f"got {sc_kwargs.get('adb_conn')!r}"
+        )
+
+        # 3. Connection must precede both worker instantiations
+        assert call_order.index("select_single_device") < call_order.index(
+            "VideoSegmentRecorder"
+        ), "select_single_device() must be called BEFORE VideoSegmentRecorder()"
+        assert call_order.index("select_single_device") < call_order.index("ScreenshotCapture"), (
+            "select_single_device() must be called BEFORE ScreenshotCapture()"
+        )
+
+    # ── Error path ─────────────────────────────────────────────────────────────
+    window2 = MainWindow()
+    qtbot.addWidget(window2)
+
+    window2.idle_screen.set_device_status("EMU-1")
+    window2.idle_screen.version_field.setText("1.0.0")
+    window2.idle_screen.player_name_field.setText("tester")
+
+    with (
+        patch(
+            "gameplay_recorder.ui.main_window.AdbConnection",
+        ) as MockAdbConn2,
+        patch(
+            "gameplay_recorder.ui.main_window.VideoSegmentRecorder",
+            spec=True,
+        ) as MockVSR2,
+        patch(
+            "gameplay_recorder.ui.main_window.ScreenshotCapture",
+            spec=True,
+        ) as MockSC2,
+        patch("gameplay_recorder.ui.main_window.PackagingWorker", spec=True),
+    ):
+        MockAdbConn2.select_single_device.side_effect = NoDeviceConnectedError(
+            "No ADB device detected."
+        )
+
+        qtbot.mouseClick(
+            window2.idle_screen.record_button,
+            __import__("PySide6.QtCore", fromlist=["Qt"]).Qt.LeftButton,
+        )
+
+        # 4. Workers must NOT be created if connection fails
+        MockVSR2.assert_not_called()
+        MockSC2.assert_not_called()
+
+        # 5. Window stays in IDLE
+        assert window2.stacked.currentIndex() == RecordingState.IDLE.value, (
+            f"Expected IDLE after ADB connect failure, got state {window2.stacked.currentIndex()}"
+        )
+
+        # 6. Error banner shows "ADB connection failed"
+        assert window2.idle_screen.error_banner.isVisible(), (
+            "error_banner must be visible after ADB connect failure"
+        )
+        assert "ADB connection failed" in window2.idle_screen.error_banner.text(), (
+            f"error_banner must say 'ADB connection failed', "
+            f"got: {window2.idle_screen.error_banner.text()!r}"
+        )
