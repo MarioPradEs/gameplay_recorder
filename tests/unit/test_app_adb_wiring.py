@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-
 # ---------------------------------------------------------------------------
 # Test 1 — main() calls discover_device() and sets status with found serial
 # ---------------------------------------------------------------------------

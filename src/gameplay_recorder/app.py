@@ -3,21 +3,26 @@
 Provides two public functions:
 - create_app(argv)  — create or reuse the QApplication singleton.
 - main()            — wire config, create MainWindow, fire-and-forget update
-                      check, show window, run event loop.
+                      check, discover ADB device, show window, run event loop.
 
 Design: Phase 14 — App Entrypoint.
+Phase 14b — ADB device discovery wired into main().
 """
 
 from __future__ import annotations
 
+import logging
 import sys
 from threading import Thread
 
 from PySide6.QtWidgets import QApplication
 
 from gameplay_recorder import __version__
+from gameplay_recorder.adb.connection import discover_device
 from gameplay_recorder.ui.main_window import MainWindow
 from gameplay_recorder.update.checker import check_for_update
+
+logger = logging.getLogger(__name__)
 
 
 def create_app(argv: list[str]) -> QApplication:
@@ -72,6 +77,17 @@ def main() -> int:
 
     _update_thread = Thread(target=_check_update, daemon=True)
     _update_thread.start()
+
+    # Discover ADB device before showing the window so the Record button
+    # state is correct on first render.
+    # discover_device() never raises — it returns (None, error) on failure.
+    try:
+        serial, _error = discover_device()
+    except Exception:  # noqa: BLE001
+        logger.exception("Unexpected error from discover_device()")
+        serial = None
+
+    window.idle_screen.set_device_status(serial)
 
     window.show()
     return app.exec()

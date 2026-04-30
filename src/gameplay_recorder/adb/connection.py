@@ -333,3 +333,33 @@ class AdbConnection:
         """Raise AdbCommandError if no device handle is set."""
         if self._adb_device is None:
             raise AdbCommandError("No ADB device connected. Call select_single_device() first.")
+
+
+# ─── Module-level convenience ─────────────────────────────────────────────────
+
+
+def discover_device() -> tuple[str | None, str | None]:
+    """Attempt to discover exactly one authorised ADB device.
+
+    Wraps :meth:`AdbConnection.select_single_device` and normalises all
+    outcomes into a ``(serial, error)`` tuple so callers never need to catch
+    exceptions.
+
+    Returns:
+        ``(serial, None)`` when exactly one authorised device is found.
+        ``(None, error_message)`` for every other outcome (no device, multiple
+        devices, unauthorised, ADB unavailable, or any unexpected exception).
+    """
+    try:
+        conn = AdbConnection.select_single_device()
+        return conn._serial, None
+    except (
+        NoDeviceConnectedError,
+        MultipleDevicesError,
+        DeviceUnauthorizedError,
+        ImportError,
+    ) as exc:
+        return None, str(exc)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Unexpected error during ADB device discovery: %s", exc)
+        return None, str(exc)
