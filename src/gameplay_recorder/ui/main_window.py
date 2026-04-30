@@ -25,7 +25,6 @@ from PySide6.QtWidgets import (
 
 from gameplay_recorder.models.session import RecordingState
 
-
 # ---------------------------------------------------------------------------
 # Screen widgets (stubs — full implementation in Phase 12)
 # ---------------------------------------------------------------------------

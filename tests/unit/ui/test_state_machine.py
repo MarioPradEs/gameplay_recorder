@@ -9,9 +9,9 @@ Requirement "GUI State Machine", Scenario "Invalid transition blocked".
 """
 
 import pytest
-from gameplay_recorder.ui.main_window import MainWindow
 
 from gameplay_recorder.models.session import RecordingState
+from gameplay_recorder.ui.main_window import MainWindow
 
 
 @pytest.mark.gui
@@ -101,3 +101,40 @@ def test_invalid_transition_stop_from_idle_is_blocked(qtbot):
     window.stop_recording.emit()
 
     assert window.stacked.currentIndex() == RecordingState.IDLE.value
+
+
+# ---------------------------------------------------------------------------
+# Triangulation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.gui
+def test_form_re_enabled_after_full_cycle(qtbot):
+    """Form inputs are re-enabled when returning to IDLE after a full cycle.
+
+    Spec: Requirement "GUI State Machine", Scenario "Form locked during recording".
+    The form is ONLY disabled during RECORDING — all other states (including
+    IDLE after record_again) must have the form enabled.
+
+    Triangulates test_transition_idle_to_recording: the disable side-effect
+    must be reversible, not sticky.
+    """
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    # Drive through the full cycle: IDLE → RECORDING → PACKAGING → DONE → IDLE
+    window.start_recording.emit()
+    assert not window.idle_screen.game_dropdown.isEnabled(), "locked during RECORDING"
+    assert not window.idle_screen.player_name_field.isEnabled(), "locked during RECORDING"
+
+    window.stop_recording.emit()
+    window.packaging_finished.emit()
+    window.record_again.emit()
+
+    assert window.stacked.currentIndex() == RecordingState.IDLE.value
+    assert window.idle_screen.game_dropdown.isEnabled(), (
+        "must be re-enabled after returning to IDLE"
+    )
+    assert window.idle_screen.player_name_field.isEnabled(), (
+        "must be re-enabled after returning to IDLE"
+    )
