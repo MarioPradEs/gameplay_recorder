@@ -230,13 +230,21 @@ class TestStopTerminatesStream:
         assert not monitor._thread.is_alive(), "Monitor thread did not stop within 2s"
 
     def test_drain_after_stop_returns_empty_list(self) -> None:
-        """After stop, drain() must return [] (queue may have been consumed)."""
+        """After stop, drain() must return [] (queue may have been consumed).
+
+        Strengthened from type-only check (isinstance) to full-state assertion:
+        - result must be exactly [] (not just any list)
+        - result must be a list (type guard)
+        - _thread must still be None (start() was never called)
+        """
         stop_event = threading.Event()
         adb = _make_adb_connection([])
         monitor = TouchEventMonitor(adb=adb, stop_event=stop_event)
         stop_event.set()
         result = monitor.drain()
-        assert isinstance(result, list)
+        assert result == [], f"Expected empty list, got {result!r}"
+        assert isinstance(result, list), f"Expected list, got {type(result).__name__}"
+        assert monitor._thread is None, "Thread should be None — start() was never called"
 
 
 # ─── Defensive: no input injection ───────────────────────────────────────────
