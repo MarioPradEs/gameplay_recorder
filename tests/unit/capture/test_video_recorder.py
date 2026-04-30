@@ -537,3 +537,188 @@ def test_run_kills_proc_when_terminate_hangs():
     assert stubborn_proc._kill_called, (
         "proc.kill() must be called when terminate() doesn't stop the process within 5s"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 14f.1 — RED: POSIX device paths in ADB commands
+# ---------------------------------------------------------------------------
+
+
+def test_segment_path_returns_posix_string_on_windows():
+    """segment_path() always yields POSIX-compatible strings for ADB commands.
+
+    On Windows Path('/sdcard') / 'seg_0.mp4' produces a WindowsPath whose
+    str() contains backslashes. Callers MUST use .as_posix(), never str().
+    This test is documentation — it already passes — but it anchors the contract.
+
+    Spec: Phase 14f — POSIX device path fix.
+    """
+    from gameplay_recorder.capture.video_recorder import segment_path
+
+    posix_str = segment_path(0).as_posix()
+    assert posix_str == "/sdcard/seg_0.mp4", (
+        f"as_posix() must return forward-slash path, got: {posix_str!r}"
+    )
+    assert "\\" not in posix_str, f"POSIX path must not contain backslashes, got: {posix_str!r}"
+
+
+def test_spawn_screenrecord_uses_posix_path():
+    """_spawn_screenrecord sends a POSIX path (forward slashes) to ADB.
+
+    When a Path object is passed (the normal call-site case via run()),
+    the adb command list must contain /sdcard/seg_0.mp4 — not backslashes.
+
+    Phase 14f.1 — RED: the str-branch of _spawn_screenrecord trusts the caller
+    to supply forward slashes, but the Path branch already calls .as_posix().
+    """
+    from gameplay_recorder.capture.video_recorder import _spawn_screenrecord, segment_path
+
+    with patch("gameplay_recorder.capture.video_recorder.subprocess") as mock_subprocess:
+        mock_proc = MagicMock()
+        mock_subprocess.Popen.return_value = mock_proc
+
+        # Pass the Path object — as returned by segment_path() in run()
+        _spawn_screenrecord("EMU-1", segment_path(0), duration=5)
+
+    cmd = mock_subprocess.Popen.call_args[0][0]
+    device_path_in_cmd = cmd[-1]
+    assert device_path_in_cmd == "/sdcard/seg_0.mp4", (
+        f"ADB command must contain POSIX device path, got: {device_path_in_cmd!r}"
+    )
+    assert "\\" not in device_path_in_cmd, (
+        f"Device path must not contain Windows backslashes, got: {device_path_in_cmd!r}"
+    )
+
+
+def test_spawn_screenrecord_uses_posix_path_when_string_input():
+    """_spawn_screenrecord normalises backslash strings to POSIX for ADB.
+
+    Even if the caller accidentally passes a string with backslashes
+    (e.g. str(WindowsPath('/sdcard/seg_0.mp4'))), the helper must coerce
+    it to forward slashes before building the adb command.
+
+    Phase 14f.1 — RED: the current str-branch does NOT normalise backslashes.
+    """
+    from gameplay_recorder.capture.video_recorder import _spawn_screenrecord
+
+    with patch("gameplay_recorder.capture.video_recorder.subprocess") as mock_subprocess:
+        mock_proc = MagicMock()
+        mock_subprocess.Popen.return_value = mock_proc
+
+        # Simulate the buggy str() on a WindowsPath
+        _spawn_screenrecord("EMU-1", "\\sdcard\\seg_0.mp4", duration=5)
+
+    cmd = mock_subprocess.Popen.call_args[0][0]
+    device_path_in_cmd = cmd[-1]
+    assert device_path_in_cmd == "/sdcard/seg_0.mp4", (
+        f"Backslash string input must be normalised to POSIX, got: {device_path_in_cmd!r}"
+    )
+    assert "\\" not in device_path_in_cmd, (
+        f"Device path must not contain Windows backslashes, got: {device_path_in_cmd!r}"
+    )
+
+
+def test_pull_and_delete_uses_posix_device_path():
+    """pull_and_delete normalises backslash device paths before issuing ADB commands.
+
+    Simulates the buggy string that run() currently passes:
+        str(WindowsPath('/sdcard/seg_0.mp4')) -> '\\sdcard\\seg_0.mp4'
+
+    Both the adb pull subprocess.run call AND the adb_conn.shell rm call must
+    receive /sdcard/seg_0.mp4 (forward slashes), never backslashes.
+
+    Phase 14f.1 — RED: current implementation passes device_path as-is.
+    """
+    from gameplay_recorder.capture.video_recorder import pull_and_delete
+
+    mock_conn = MagicMock(spec=AdbConnection)
+    mock_conn._serial = "EMU-1"
+    # Simulate the Windows-backslash bug at the call site
+    buggy_device_path = "\\sdcard\\seg_0.mp4"
+    local_dir = Path("/tmp/segments")
+
+    with patch("gameplay_recorder.capture.video_recorder.subprocess") as mock_subprocess:
+        mock_subprocess.run.return_value = MagicMock(returncode=0)
+        pull_and_delete(mock_conn, buggy_device_path, local_dir)
+
+    # Assert subprocess.run (adb pull) received POSIX path
+    run_args_str = str(mock_subprocess.run.call_args)
+    assert "/sdcard/seg_0.mp4" in run_args_str, (
+        f"adb pull must receive POSIX path '/sdcard/seg_0.mp4', got call: {run_args_str}"
+    )
+    assert "\\sdcard" not in run_args_str, (
+        f"adb pull must NOT contain backslash path, got call: {run_args_str}"
+    )
+
+    # Assert adb_conn.shell (rm -f) received POSIX path
+    shell_call_str = str(mock_conn.shell.call_args)
+    assert "/sdcard/seg_0.mp4" in shell_call_str, (
+        f"rm -f must receive POSIX path '/sdcard/seg_0.mp4', got call: {shell_call_str}"
+    )
+    assert "\\sdcard" not in shell_call_str, (
+        f"rm -f must NOT contain backslash path, got call: {shell_call_str}"
+    )
+
+
+def test_video_segment_recorder_run_passes_posix_path_through_pipeline():
+    """VideoSegmentRecorder.run() passes POSIX device paths through the entire pipeline.
+
+    Integration-flavoured: verifies that both _spawn_screenrecord AND
+    pull_and_delete receive forward-slash device paths — no matter what
+    str(WindowsPath) would produce on Windows.
+
+    Phase 14f.1 — RED: run() currently calls str(dev_path) which produces
+    backslashes on Windows hosts.
+    """
+    import time
+
+    from gameplay_recorder.capture.video_recorder import VideoSegmentRecorder
+
+    mock_conn = _make_mock_conn()
+    mock_conn._serial = "EMU-1"
+
+    spawn_calls = []
+    pull_calls = []
+
+    def _fake_spawn(serial, device_path, duration):
+        spawn_calls.append(device_path)
+        return _FakeProcess()
+
+    def _fake_pull(adb_conn, device_path, local_dir):
+        pull_calls.append(device_path)
+        return Path("/tmp/segs/seg_0.mp4")
+
+    recorder = VideoSegmentRecorder(
+        adb_conn=mock_conn,
+        local_dir=Path("/tmp/segs"),
+        duration=5,
+    )
+
+    with (
+        patch(
+            "gameplay_recorder.capture.video_recorder._spawn_screenrecord",
+            side_effect=_fake_spawn,
+        ),
+        patch(
+            "gameplay_recorder.capture.video_recorder.pull_and_delete",
+            side_effect=_fake_pull,
+        ),
+    ):
+        recorder.start()
+        time.sleep(0.1)
+        recorder.requestInterruption()
+        recorder.wait()
+
+    assert len(spawn_calls) >= 1, "Expected at least one _spawn_screenrecord call"
+    assert len(pull_calls) >= 1, "Expected at least one pull_and_delete call"
+
+    for path_arg in spawn_calls:
+        path_str = str(path_arg)
+        assert "\\" not in path_str, (
+            f"_spawn_screenrecord must receive POSIX path, got: {path_str!r}"
+        )
+        assert "seg_0.mp4" in path_str
+
+    for path_arg in pull_calls:
+        assert "\\" not in path_arg, f"pull_and_delete must receive POSIX path, got: {path_arg!r}"
+        assert "seg_0.mp4" in path_arg
