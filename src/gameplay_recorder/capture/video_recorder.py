@@ -46,6 +46,25 @@ _DEVICE_SEG_DIR: str = "/sdcard"
 # ---------------------------------------------------------------------------
 
 
+def _to_posix_device_path(path: str | Path) -> str:
+    """Normalize a path to POSIX form (forward-slash) for ADB commands.
+
+    ADB always uses POSIX paths on the device side regardless of host OS.
+    On Windows, Path objects and strings may contain backslashes — this
+    helper guarantees forward slashes everywhere ADB sees a device path.
+
+    Args:
+        path: On-device path as a Path object or string.
+
+    Returns:
+        POSIX-style string with forward slashes only (e.g. '/sdcard/seg_0.mp4').
+    """
+    if isinstance(path, Path):
+        return path.as_posix()
+    # String input — replace any backslashes with forward slashes
+    return str(path).replace("\\", "/")
+
+
 def segment_path(index: int, device_dir: str = _DEVICE_SEG_DIR) -> Path:
     """Return the on-device path for segment *index* as a local Path object.
 
@@ -127,11 +146,7 @@ def _spawn_screenrecord(
         duration:    Max recording duration in seconds (default: SEGMENT_DURATION_S).
     """
     # Ensure POSIX separators — the path is on Android, not Windows host
-    if isinstance(device_path, Path):
-        posix_path = device_path.as_posix()
-    else:
-        # Already a string — trust the caller used forward slashes
-        posix_path = str(device_path)
+    posix_path = _to_posix_device_path(device_path)
 
     adb = _resolve_adb()
     cmd = [
@@ -167,6 +182,9 @@ def pull_and_delete(
     local_dir.mkdir(parents=True, exist_ok=True)
     adb = _resolve_adb()
     serial = getattr(adb_conn, "_serial", None) or ""
+
+    # Normalize to POSIX — ADB always uses forward slashes on the device side
+    device_path = _to_posix_device_path(device_path)
 
     # Pull the file to the local directory
     pull_cmd = (
@@ -231,7 +249,7 @@ class VideoSegmentRecorder(QThread):
                 )
                 proc = _spawn_screenrecord(
                     self._adb_conn._serial or "",
-                    dev_path,
+                    _to_posix_device_path(dev_path),
                     duration=self._duration,
                 )
                 logger.info("VideoSegmentRecorder: screenrecord proc started PID=%s", proc.pid)
@@ -271,7 +289,9 @@ class VideoSegmentRecorder(QThread):
                         segment_index,
                         dev_path,
                     )
-                    local_file = pull_and_delete(self._adb_conn, str(dev_path), self._local_dir)
+                    local_file = pull_and_delete(
+                        self._adb_conn, _to_posix_device_path(dev_path), self._local_dir
+                    )
                     logger.info(
                         "VideoSegmentRecorder: segment %d pulled to %s", segment_index, local_file
                     )
@@ -283,7 +303,9 @@ class VideoSegmentRecorder(QThread):
                 logger.info(
                     "VideoSegmentRecorder: pulling segment %d from %s", segment_index, dev_path
                 )
-                local_file = pull_and_delete(self._adb_conn, str(dev_path), self._local_dir)
+                local_file = pull_and_delete(
+                    self._adb_conn, _to_posix_device_path(dev_path), self._local_dir
+                )
                 logger.info(
                     "VideoSegmentRecorder: segment %d pulled to %s", segment_index, local_file
                 )
