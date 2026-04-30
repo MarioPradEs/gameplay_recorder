@@ -118,21 +118,23 @@ class ScreenshotCapture(QThread):
 
     def run(self) -> None:
         """Main capture loop — runs in the worker thread."""
+        logger.info("ScreenshotCapture: starting capture loop, interval=%ds", self.interval_s)
         while not self.isInterruptionRequested():
             try:
                 self._take_screenshot()
-            except Exception as exc:
-                # Log failed captures — recording must continue uninterrupted,
-                # but failures should not be invisible. A single failed screencap
-                # is recoverable; the user can diagnose from logs.
-                logger.warning(
-                    "ScreenshotCapture: screenshot failed (%s: %s)", type(exc).__name__, exc
-                )
+            except Exception:
+                # Log failed captures with full traceback — recording must continue
+                # uninterrupted, but failures should not be invisible.
+                logger.exception("ScreenshotCapture: screenshot failed")
             # Sleep in small increments so interruption is responsive
             elapsed = 0.0
             while elapsed < self.interval_s and not self.isInterruptionRequested():
                 time.sleep(0.1)
                 elapsed += 0.1
+        logger.info(
+            "ScreenshotCapture: capture loop ended, total %d screenshots taken",
+            self._screenshot_count,
+        )
 
     @property
     def screenshots(self) -> list[Path]:

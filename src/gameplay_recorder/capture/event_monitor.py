@@ -153,7 +153,9 @@ class TouchEventMonitor:
 
     def _run(self, node: str) -> None:
         """Thread target: stream getevent output and parse into RawTouchEvents."""
+        logger.info("TouchEventMonitor: starting event capture on node=%s", node)
         cmd = f"getevent -l -t {node}"
+        event_count = 0
         try:
             for line in self._adb.shell_stream(cmd):
                 if self._stop_event.is_set():
@@ -161,9 +163,13 @@ class TouchEventMonitor:
                 # shell_stream may yield bytes or str depending on adbutils version
                 if isinstance(line, bytes):
                     line = line.decode("utf-8", errors="replace")
+                before = self._queue.qsize()
                 self._parse_line(line)
+                if self._queue.qsize() > before:
+                    event_count += 1
         except Exception:
             logger.exception("TouchEventMonitor: stream error")
+        logger.info("TouchEventMonitor: capture ended, %d events enqueued", event_count)
 
     # ─── getevent line parser (mini state machine) ───────────────────────────
 

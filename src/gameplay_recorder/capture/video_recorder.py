@@ -218,34 +218,81 @@ class VideoSegmentRecorder(QThread):
     def run(self) -> None:
         """Main recording loop — runs in the worker thread."""
         segment_index = 0
+        logger.info("VideoSegmentRecorder: starting capture loop, segment_index=%d", segment_index)
         try:
             while not self.isInterruptionRequested():
                 dev_path = segment_path(segment_index)
                 self.segment_started.emit(segment_index)
 
+                logger.info(
+                    "VideoSegmentRecorder: spawning screenrecord serial=%s device_path=%s",
+                    self._adb_conn._serial,
+                    dev_path,
+                )
                 proc = _spawn_screenrecord(
                     self._adb_conn._serial or "",
                     dev_path,
                     duration=self._duration,
                 )
+                logger.info("VideoSegmentRecorder: screenrecord proc started PID=%s", proc.pid)
 
-                # Wait for this segment to finish (either time-limit or interruption)
-                proc.wait()
+                # Wait for this segment to finish, but check for interruption every second
+                while proc.poll() is None:
+                    if self.isInterruptionRequested():
+                        logger.info(
+                            "VideoSegmentRecorder: interruption requested, terminating screenrecord"
+                        )
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            logger.warning(
+                                "VideoSegmentRecorder: screenrecord did not terminate after 5s,"
+                                " killing"
+                            )
+                            proc.kill()
+                            proc.wait()
+                        break
+                    try:
+                        proc.wait(timeout=1)
+                    except subprocess.TimeoutExpired:
+                        continue  # poll loop again
+
+                logger.info(
+                    "VideoSegmentRecorder: proc.wait() returned, returncode=%s, interrupted=%s",
+                    proc.returncode,
+                    self.isInterruptionRequested(),
+                )
 
                 if self.isInterruptionRequested():
                     # Clean termination: pull whatever was recorded
+                    logger.info(
+                        "VideoSegmentRecorder: pulling segment %d from %s",
+                        segment_index,
+                        dev_path,
+                    )
                     local_file = pull_and_delete(self._adb_conn, str(dev_path), self._local_dir)
+                    logger.info(
+                        "VideoSegmentRecorder: segment %d pulled to %s", segment_index, local_file
+                    )
                     self._segments.append(local_file)
                     self.segment_finished.emit(segment_index, local_file)
                     break
 
                 # Normal 170s segment completion — pull and start next
+                logger.info(
+                    "VideoSegmentRecorder: pulling segment %d from %s", segment_index, dev_path
+                )
                 local_file = pull_and_delete(self._adb_conn, str(dev_path), self._local_dir)
+                logger.info(
+                    "VideoSegmentRecorder: segment %d pulled to %s", segment_index, local_file
+                )
                 self._segments.append(local_file)
                 self.segment_finished.emit(segment_index, local_file)
                 segment_index += 1
 
         except Exception as exc:
+            logger.exception("VideoSegmentRecorder: run() raised")
             self.recording_error.emit(str(exc))
 
     @property
