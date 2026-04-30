@@ -326,7 +326,10 @@ class MainWindow(QMainWindow):
             message: Human-readable error description from VideoSegmentRecorder.
 
         Spec: Requirement "Segmented Video Capture" — errors surface to the user.
+        Phase 14e.5: Also logs the error so it appears in console output — previously
+        the error was invisible in logs.
         """
+        logger.error("Recording error: %s", message)
         self._recording_screen.error_banner.setText(message)
         self._recording_screen.error_banner.setVisible(True)
 
