@@ -421,3 +421,52 @@ class TestZipValidationGameId:
 
         result = assemble_zip(session_dir, meta, output_dir)
         assert result.exists()
+
+
+# ---------------------------------------------------------------------------
+# Phase 14d.4 — RED: assemble_zip raises FileNotFoundError on missing required files
+# ---------------------------------------------------------------------------
+
+
+class TestZipMissingRequiredFiles:
+    """Phase 14d.4 — assemble_zip must raise FileNotFoundError when required files
+    are absent, instead of silently creating an incomplete ZIP.
+
+    Spec: gameplay.mp4 and events.jsonl MUST be present before packaging proceeds.
+    """
+
+    def test_assemble_zip_raises_when_gameplay_mp4_missing(self, tmp_path: Path) -> None:
+        """assemble_zip raises FileNotFoundError with 'gameplay.mp4' in message
+        when gameplay.mp4 is not present in session_dir.
+
+        Phase 14d.4: Currently assemble_zip only logs a warning and creates an
+        incomplete ZIP. Must fail loudly instead.
+        """
+        from gameplay_recorder.packaging.zipper import assemble_zip
+
+        session_dir = _make_session_dir(tmp_path)
+        # Remove gameplay.mp4
+        (session_dir / "gameplay.mp4").unlink()
+        meta = _make_meta()
+        output_dir = tmp_path / "out"
+
+        with pytest.raises(FileNotFoundError, match="gameplay.mp4"):
+            assemble_zip(session_dir, meta, output_dir)
+
+    def test_assemble_zip_raises_when_events_jsonl_missing(self, tmp_path: Path) -> None:
+        """assemble_zip raises FileNotFoundError with 'events.jsonl' in message
+        when events.jsonl is not present in session_dir.
+
+        Phase 14d.4: events.jsonl is required — if it's missing the session is
+        useless and packaging must fail loudly.
+        """
+        from gameplay_recorder.packaging.zipper import assemble_zip
+
+        session_dir = _make_session_dir(tmp_path)
+        # Remove events.jsonl
+        (session_dir / "events.jsonl").unlink()
+        meta = _make_meta()
+        output_dir = tmp_path / "out"
+
+        with pytest.raises(FileNotFoundError, match="events.jsonl"):
+            assemble_zip(session_dir, meta, output_dir)

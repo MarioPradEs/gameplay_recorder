@@ -1,4 +1,4 @@
-"""RED phase — Phase 13.1 + Phase 14c.1/14c.3: UI Threading / Worker Wiring tests.
+"""RED phase — Phase 13.1 + Phase 14c.1/14c.3 + Phase 14d.2/14d.3/14d.5: UI Threading / Worker Wiring tests.
 
 Tests that MainWindow correctly creates, starts, and wires QThread workers
 when the user clicks Record and Stop.
@@ -13,7 +13,10 @@ Spec references:
 
 from __future__ import annotations
 
+import os
 import re
+import sys
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -698,3 +701,275 @@ def test_start_recording_connects_adb_before_passing_to_workers(qtbot):
             f"error_banner must say 'ADB connection failed', "
             f"got: {window2.idle_screen.error_banner.text()!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 14d.2 — RED: TouchEventMonitor must be spawned in start_recording_session
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.gui
+def test_start_recording_spawns_touch_event_monitor(qtbot):
+    """start_recording_session() MUST instantiate and start a TouchEventMonitor.
+
+    Phase 14d.2: Spec Requirement "Raw Touch Event Capture" — events.jsonl is
+    never created because TouchEventMonitor is never started.
+
+    Verifies:
+    1. TouchEventMonitor is instantiated with adb=<the live AdbConnection>,
+       stop_event=<a threading.Event>.
+    2. TouchEventMonitor.start() is called.
+    3. On stop_recording_session(), stop_event.set() is called (or .stop() on monitor).
+    """
+    import threading
+
+    from gameplay_recorder.adb.connection import AdbConnection
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    window.idle_screen.set_device_status("EMU-1")
+    window.idle_screen.version_field.setText("1.0.0")
+    window.idle_screen.player_name_field.setText("tester")
+
+    mock_conn = MagicMock(spec=AdbConnection)
+    mock_monitor = MagicMock()
+
+    with (
+        patch("gameplay_recorder.ui.main_window.AdbConnection") as MockAdbConn,
+        patch("gameplay_recorder.ui.main_window.VideoSegmentRecorder", spec=True),
+        patch("gameplay_recorder.ui.main_window.ScreenshotCapture", spec=True),
+        patch("gameplay_recorder.ui.main_window.PackagingWorker", spec=True),
+        patch(
+            "gameplay_recorder.ui.main_window.TouchEventMonitor",
+            return_value=mock_monitor,
+        ) as MockTEM,
+    ):
+        MockAdbConn.select_single_device.return_value = mock_conn
+
+        # Click Record
+        qtbot.mouseClick(
+            window.idle_screen.record_button,
+            __import__("PySide6.QtCore", fromlist=["Qt"]).Qt.LeftButton,
+        )
+
+        # 1. TouchEventMonitor must be instantiated
+        MockTEM.assert_called_once()
+        call_kwargs = MockTEM.call_args.kwargs
+        # adb must be the live connection
+        assert call_kwargs.get("adb") is mock_conn, (
+            f"TouchEventMonitor 'adb' must be the live AdbConnection, "
+            f"got {call_kwargs.get('adb')!r}"
+        )
+        # stop_event must be a threading.Event
+        stop_event = call_kwargs.get("stop_event")
+        assert isinstance(stop_event, threading.Event), (
+            f"TouchEventMonitor 'stop_event' must be threading.Event, got {type(stop_event)!r}"
+        )
+
+        # 2. .start() must have been called
+        mock_monitor.start.assert_called_once()
+
+        # 3. On stop, the stop_event must be set
+        qtbot.mouseClick(
+            window._recording_screen.stop_button,
+            __import__("PySide6.QtCore", fromlist=["Qt"]).Qt.LeftButton,
+        )
+
+        # stop_event.set() stops the monitor thread
+        assert stop_event.is_set(), "stop_event must be set() when stop_recording_session() runs"
+
+
+# ---------------------------------------------------------------------------
+# Phase 14d.3 — RED: RecordingScreen timer ticks every second
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.gui
+def test_recording_screen_timer_ticks_every_second(qtbot):
+    """After start_recording_session(), the timer_label must advance after ~2 seconds.
+
+    Phase 14d.3: A QTimer(1000ms) must be started in start_recording_session()
+    and connected to update_elapsed() on RecordingScreen.
+
+    Verifies:
+    - timer_label starts at "0:00"
+    - After waiting 2.5s (using qtbot.wait to keep event loop alive), it shows
+      a non-zero elapsed time (at least "0:01" or higher).
+    """
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    window.idle_screen.set_device_status("EMU-1")
+    window.idle_screen.version_field.setText("1.0.0")
+    window.idle_screen.player_name_field.setText("tester")
+
+    with (
+        patch("gameplay_recorder.ui.main_window.AdbConnection"),
+        patch("gameplay_recorder.ui.main_window.VideoSegmentRecorder", spec=True),
+        patch("gameplay_recorder.ui.main_window.ScreenshotCapture", spec=True),
+        patch("gameplay_recorder.ui.main_window.PackagingWorker", spec=True),
+        patch("gameplay_recorder.ui.main_window.TouchEventMonitor"),
+    ):
+        # Click Record
+        qtbot.mouseClick(
+            window.idle_screen.record_button,
+            __import__("PySide6.QtCore", fromlist=["Qt"]).Qt.LeftButton,
+        )
+
+        # Initial state: must be in RECORDING
+        assert window.stacked.currentIndex() == RecordingState.RECORDING.value
+
+        # Wait with event loop running so QTimer can fire
+        qtbot.wait(2500)
+
+        # Timer label must have advanced beyond "0:00"
+        assert window._recording_screen.timer_label.text() != "0:00", (
+            f"timer_label must advance after 2.5s, still shows "
+            f"{window._recording_screen.timer_label.text()!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Phase 14d.3 — RED: segment_finished signal increments segment counter
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.gui
+def test_segment_finished_signal_increments_counter(qtbot):
+    """Emitting segment_finished(1, path) from the video worker increments the segment counter.
+
+    Phase 14d.3: VideoSegmentRecorder.segment_finished(int, Path) must be
+    connected to a slot that updates RecordingScreen's segment counter label.
+
+    Verifies:
+    - Before any segment_finished: segment label shows initial state (Segment: 0)
+    - After emitting segment_finished(1, fake_path): label shows "Segment: 1"
+      or "Segments: 1" (any text reflecting count=1).
+    """
+    from gameplay_recorder.capture.video_recorder import VideoSegmentRecorder
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    window.idle_screen.set_device_status("EMU-1")
+    window.idle_screen.version_field.setText("1.0.0")
+    window.idle_screen.player_name_field.setText("tester")
+
+    mock_vsr_instance = MagicMock(spec=VideoSegmentRecorder)
+    # We need the real signal for segment_finished — use a real QObject with signals
+    from PySide6.QtCore import QObject, Signal as QSignal
+
+    class FakeWorker(QObject):
+        segment_started = QSignal(int)
+        segment_finished = QSignal(int, object)
+        recording_error = QSignal(str)
+
+        def requestInterruption(self):
+            pass
+
+        @property
+        def segments(self):
+            return []
+
+    fake_worker = FakeWorker()
+
+    with (
+        patch("gameplay_recorder.ui.main_window.AdbConnection"),
+        patch(
+            "gameplay_recorder.ui.main_window.VideoSegmentRecorder",
+            return_value=fake_worker,
+        ),
+        patch("gameplay_recorder.ui.main_window.ScreenshotCapture", spec=True),
+        patch("gameplay_recorder.ui.main_window.PackagingWorker", spec=True),
+        patch("gameplay_recorder.ui.main_window.TouchEventMonitor"),
+    ):
+        # Click Record to wire signals
+        qtbot.mouseClick(
+            window.idle_screen.record_button,
+            __import__("PySide6.QtCore", fromlist=["Qt"]).Qt.LeftButton,
+        )
+
+        # Initial segment count label should show 0
+        initial_text = window._recording_screen._segment_label.text()
+        assert "0" in initial_text, (
+            f"Expected initial segment label to contain '0', got {initial_text!r}"
+        )
+
+        # Emit segment_finished(1, path) from the worker
+        fake_path = Path("/tmp/seg_0.mp4")
+        fake_worker.segment_finished.emit(1, fake_path)
+
+        # The segment label must now reflect count=1
+        updated_text = window._recording_screen._segment_label.text()
+        assert "1" in updated_text, (
+            f"After segment_finished(1, ...), segment label must contain '1', got {updated_text!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Phase 14d.5 — RED: DoneScreen buttons wired
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.gui
+def test_open_folder_button_calls_os_startfile(qtbot):
+    """Clicking open_folder_button reveals the ZIP parent folder.
+
+    Phase 14d.5: open_folder_button.clicked must trigger an OS-specific file
+    manager reveal:
+    - Windows: os.startfile(zip_path.parent)
+    - macOS: subprocess.run(["open", "-R", str(zip_path)])
+
+    Verifies (platform-specific mock): the appropriate call is made with
+    the ZIP's parent directory.
+    """
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    zip_path = Path("C:/Users/test/recordings/session.zip")
+    window._done_screen.set_zip_path(zip_path)
+    # Also store it on the window so the slot can retrieve it
+    window._done_screen._zip_path = zip_path
+
+    Qt_LeftButton = __import__("PySide6.QtCore", fromlist=["Qt"]).Qt.LeftButton
+
+    if sys.platform == "win32":
+        with patch("os.startfile") as mock_startfile:
+            qtbot.mouseClick(window._done_screen._open_folder_button, Qt_LeftButton)
+            mock_startfile.assert_called_once_with(zip_path.parent)
+    else:
+        import subprocess
+
+        with patch("subprocess.run") as mock_run:
+            qtbot.mouseClick(window._done_screen._open_folder_button, Qt_LeftButton)
+            mock_run.assert_called_once_with(["open", "-R", str(zip_path)])
+
+
+@pytest.mark.gui
+def test_record_again_button_transitions_to_idle(qtbot):
+    """Clicking record_again_button transitions DoneScreen → IDLE.
+
+    Phase 14d.5: record_again_button.clicked must emit record_again signal
+    (which the state machine maps DONE → IDLE).
+
+    Verifies:
+    - Start in DONE state
+    - Click record_again_button
+    - State transitions to IDLE
+    """
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    # Drive to DONE state directly
+    window.start_recording.emit()
+    window.stop_recording.emit()
+    window._on_packaging_finished(Path("/tmp/fake.zip"))
+    assert window.stacked.currentIndex() == RecordingState.DONE.value
+
+    Qt_LeftButton = __import__("PySide6.QtCore", fromlist=["Qt"]).Qt.LeftButton
+    qtbot.mouseClick(window._done_screen._record_again_button, Qt_LeftButton)
+
+    assert window.stacked.currentIndex() == RecordingState.IDLE.value, (
+        f"Expected IDLE after clicking Record Again, got state {window.stacked.currentIndex()}"
+    )
