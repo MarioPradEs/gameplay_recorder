@@ -240,12 +240,16 @@ def test_recording_error_shows_banner(qtbot):
 
 @pytest.mark.gui
 def test_start_recording_passes_real_adb_connection_to_workers(qtbot):
-    """Record click constructs AdbConnection(serial=...) and passes it to workers.
+    """Record click calls AdbConnection.select_single_device() and passes the
+    resulting connected instance to workers.
 
-    Phase 14c.1: Workers MUST receive a real AdbConnection (not None).
+    Phase 14c.1 (updated by 14c-fix): Workers MUST receive a real, fully-wired
+    AdbConnection (one whose _adb_device is set). Using AdbConnection(serial)
+    alone leaves _adb_device=None → workers crash with AdbCommandError.
+    The correct path is AdbConnection.select_single_device().
 
     Verifies: VideoSegmentRecorder and ScreenshotCapture are both instantiated
-    with adb_conn equal to the AdbConnection constructed from the device serial.
+    with adb_conn equal to the instance returned by select_single_device().
     """
     from gameplay_recorder.adb.connection import AdbConnection
 
@@ -273,15 +277,15 @@ def test_start_recording_passes_real_adb_connection_to_workers(qtbot):
         ) as MockSC,
         patch("gameplay_recorder.ui.main_window.PackagingWorker", spec=True),
     ):
-        MockConn.return_value = mock_conn
+        MockConn.select_single_device.return_value = mock_conn
 
         qtbot.mouseClick(
             window.idle_screen.record_button,
             __import__("PySide6.QtCore", fromlist=["Qt"]).Qt.LeftButton,
         )
 
-        # AdbConnection must be constructed with the device serial
-        MockConn.assert_called_once_with("EMU-1")
+        # AdbConnection.select_single_device() must be called (fully-wired path)
+        MockConn.select_single_device.assert_called_once()
 
         # Both workers receive the real AdbConnection instance (not None)
         vsr_call_kwargs = MockVSR.call_args

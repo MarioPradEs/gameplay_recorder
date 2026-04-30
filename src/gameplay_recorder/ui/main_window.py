@@ -189,14 +189,17 @@ class MainWindow(QMainWindow):
             self.idle_screen.show_error_banner("Please fill version and player name")
             return
 
-        # ── Build live AdbConnection ──────────────────────────────────────
-        self._adb_conn = AdbConnection(serial)
+        # ── Build live AdbConnection (fully wired — _adb_device set) ─────
+        try:
+            self._adb_conn = AdbConnection.select_single_device()
+        except Exception as exc:
+            logger.warning("start_recording_session: ADB connect failed: %s", exc)
+            self.idle_screen.show_error_banner(f"ADB connection failed: {exc}")
+            return
 
         # ── Build SessionMeta ─────────────────────────────────────────────
         self._start_time = time.time()
-        started_at = datetime.fromtimestamp(self._start_time, tz=UTC).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
+        started_at = datetime.fromtimestamp(self._start_time, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         self._meta = SessionMeta(
             game_id=self.idle_screen.selected_game_id(),
             game_version=game_version,
