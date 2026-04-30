@@ -970,3 +970,62 @@ def test_record_again_button_transitions_to_idle(qtbot):
     assert window.stacked.currentIndex() == RecordingState.IDLE.value, (
         f"Expected IDLE after clicking Record Again, got state {window.stacked.currentIndex()}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 14e.4 — RED: recording_error must be logged at ERROR level
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.gui
+def test_recording_error_is_logged(qtbot, caplog):
+    """_on_recording_error() logs the error message at ERROR level.
+
+    Phase 14e.4/14e.5: Worker exceptions are invisible in the console because
+    recording_error signal only updates the UI banner — there is no logger call.
+    This means a fatal worker exception leaves ZERO traces in logs.
+
+    Verifies: calling _on_recording_error("test failure") produces an ERROR-level
+    log record containing "test failure" from the main_window logger.
+    """
+    import logging
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    with caplog.at_level(logging.ERROR, logger="gameplay_recorder.ui.main_window"):
+        window._on_recording_error("test failure")
+
+    error_messages = [r.message for r in caplog.records if r.levelno == logging.ERROR]
+    assert any("test failure" in msg for msg in error_messages), (
+        f"Expected ERROR log containing 'test failure', got records: {error_messages!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Triangulation: recording_error log message also shows when error contains
+# special characters / long messages
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.gui
+def test_recording_error_is_logged_with_full_message(qtbot, caplog):
+    """_on_recording_error() logs the FULL error message, not a truncated version.
+
+    Triangulation: error messages from adb failures can be long; ensure the full
+    string is logged so the user can diagnose from console output.
+    """
+    import logging
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    long_error = "AdbCommandError: device 'emulator-5554' not found; adb -s emulator-5554 shell screenrecord: exit 1"
+
+    with caplog.at_level(logging.ERROR, logger="gameplay_recorder.ui.main_window"):
+        window._on_recording_error(long_error)
+
+    error_messages = [r.message for r in caplog.records if r.levelno == logging.ERROR]
+    assert any("AdbCommandError" in msg for msg in error_messages), (
+        f"Full error message must appear in log, got: {error_messages!r}"
+    )
