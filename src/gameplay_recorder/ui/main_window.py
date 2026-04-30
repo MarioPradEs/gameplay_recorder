@@ -14,6 +14,8 @@ Invalid transitions are silently blocked — state unchanged, no exception.
 from __future__ import annotations
 
 import logging
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 from PySide6.QtCore import Signal
@@ -23,9 +25,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from gameplay_recorder.adb.connection import AdbConnection
 from gameplay_recorder.capture.screenshot_capture import ScreenshotCapture
 from gameplay_recorder.capture.video_recorder import VideoSegmentRecorder
-from gameplay_recorder.models.session import RecordingState
+from gameplay_recorder.config import DEFAULT_OUTPUT_DIR, SCREENSHOT_INTERVAL_S, SEGMENT_DURATION_S
+from gameplay_recorder.models.session import RecordingState, SessionMeta
 from gameplay_recorder.packaging.worker import PackagingWorker
 from gameplay_recorder.ui.done_screen import DoneScreen
 from gameplay_recorder.ui.idle_screen import IdleScreen
@@ -123,6 +127,12 @@ class MainWindow(QMainWindow):
         self._screenshot_worker: ScreenshotCapture | None = None
         self._packaging_worker: PackagingWorker | None = None
 
+        # Session state (populated by start_recording_session, used by stop).
+        self._adb_conn: AdbConnection | None = None
+        self._session_dir: Path | None = None
+        self._meta: SessionMeta | None = None
+        self._start_time: float | None = None
+
     # ------------------------------------------------------------------
     # State machine
     # ------------------------------------------------------------------
@@ -158,21 +168,59 @@ class MainWindow(QMainWindow):
         """Create and start video + screenshot workers, then transition IDLE → RECORDING.
 
         Spec: Requirement "Segmented Video Capture" — worker lifecycle.
-        Called when the user clicks the Record button on IdleScreen.
-        Workers require an AdbConnection; at this stage they are created with
-        placeholder args so the slot shape is testable — real wiring happens
-        when the app entry point (Phase 14) provides the connection.
+        Phase 14c: Wires real AdbConnection, SessionMeta, and session_dir.
+
+        Guards:
+        - Serial must be set on IdleScreen (device connected).
+        - version_field and player_name_field must be non-empty.
+        If any guard fails, logs a warning and stays in IDLE.
         """
-        # Create workers.  The AdbConnection and session_dir are supplied by
-        # the application layer; here we store None-guarded references so the
-        # tests can inject mocks via patch('gameplay_recorder.ui.main_window.VideoSegmentRecorder').
+        # ── Guard: device serial ──────────────────────────────────────────
+        serial = self.idle_screen._current_serial
+        if not serial:
+            logger.warning("start_recording_session: no device serial — staying in IDLE")
+            return
+
+        # ── Guard: required form fields ───────────────────────────────────
+        game_version = self.idle_screen.version_field.text().strip()
+        recorded_by = self.idle_screen.player_name_field.text().strip()
+        if not game_version or not recorded_by:
+            logger.warning("start_recording_session: version/player empty — staying in IDLE")
+            self.idle_screen.show_error_banner("Please fill version and player name")
+            return
+
+        # ── Build live AdbConnection ──────────────────────────────────────
+        self._adb_conn = AdbConnection(serial)
+
+        # ── Build SessionMeta ─────────────────────────────────────────────
+        self._start_time = time.time()
+        started_at = datetime.fromtimestamp(self._start_time, tz=UTC).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        self._meta = SessionMeta(
+            game_id=self.idle_screen.selected_game_id(),
+            game_version=game_version,
+            recorded_by=recorded_by,
+            started_at=started_at,
+            duration_seconds=0,
+            schema_version="1",
+        )
+
+        # ── Create session directory ──────────────────────────────────────
+        session_dir = DEFAULT_OUTPUT_DIR / f".tmp_{int(self._start_time)}"
+        session_dir.mkdir(parents=True, exist_ok=True)
+        self._session_dir = session_dir
+
+        # ── Create workers with real args ─────────────────────────────────
         self._video_worker = VideoSegmentRecorder(
-            adb_conn=None,  # type: ignore[arg-type]
-            local_dir=Path("."),
+            adb_conn=self._adb_conn,
+            local_dir=self._session_dir,
+            duration=SEGMENT_DURATION_S,
         )
         self._screenshot_worker = ScreenshotCapture(
-            adb_conn=None,  # type: ignore[arg-type]
-            session_dir=Path("."),
+            adb_conn=self._adb_conn,
+            session_dir=self._session_dir,
+            interval_s=SCREENSHOT_INTERVAL_S,
         )
 
         # Wire error signal before starting.
@@ -188,22 +236,36 @@ class MainWindow(QMainWindow):
         """Interrupt workers, start packaging, then transition RECORDING → PACKAGING.
 
         Spec: Requirement "Segmented Video Capture" — graceful stop.
-        Called when the user clicks the Stop button on RecordingScreen.
+        Phase 14c: Uses real session_dir and meta stored during start_recording_session.
         """
         if self._video_worker is not None:
             self._video_worker.requestInterruption()
         if self._screenshot_worker is not None:
             self._screenshot_worker.requestInterruption()
 
-        # Create and start PackagingWorker.
-        # Segments / meta / output_dir are placeholders — Phase 14 wires real values.
+        # Update duration now that the session is ending.
+        if self._meta is not None and self._start_time is not None:
+            elapsed = int(time.time() - self._start_time)
+            # SessionMeta is frozen — rebuild with updated duration_seconds.
+            self._meta = SessionMeta(
+                game_id=self._meta.game_id,
+                game_version=self._meta.game_version,
+                recorded_by=self._meta.recorded_by,
+                started_at=self._meta.started_at,
+                duration_seconds=elapsed,
+                schema_version=self._meta.schema_version,
+            )
+
+        # Create and start PackagingWorker with real args.
+        segments = list(self._video_worker.segments) if self._video_worker is not None else []
         self._packaging_worker = PackagingWorker(
-            segments=[],
-            session_dir=Path("."),
-            meta=None,  # type: ignore[arg-type]
-            output_dir=Path("."),
+            segments=segments,
+            session_dir=self._session_dir or Path("."),
+            meta=self._meta,  # type: ignore[arg-type]
+            output_dir=DEFAULT_OUTPUT_DIR,
         )
         self._packaging_worker.finished.connect(self._on_packaging_finished)
+        self._packaging_worker.error.connect(self._on_packaging_error)
 
         self._packaging_worker.start()
 
@@ -235,3 +297,19 @@ class MainWindow(QMainWindow):
         """
         self._recording_screen.error_banner.setText(message)
         self._recording_screen.error_banner.setVisible(True)
+
+    def _on_packaging_error(self, message: str) -> None:
+        """Handle a PackagingWorker error — transition PACKAGING → IDLE with error banner.
+
+        Args:
+            message: Human-readable failure description from PackagingWorker.
+
+        Phase 14c: Prevents the app from getting stuck in PACKAGING state on failure.
+        """
+        logger.error("PackagingWorker failed: %s", message)
+        # Transition back to IDLE via the state machine.
+        self.stacked.setCurrentIndex(RecordingState.IDLE)
+        # Re-enable form inputs (they're locked during RECORDING but IDLE allows them).
+        self._apply_state(RecordingState.IDLE)
+        # Show error banner on IdleScreen so the user knows what went wrong.
+        self.idle_screen.show_error_banner(message)

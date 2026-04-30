@@ -71,15 +71,18 @@ def test_idle_screen_record_button_disabled_without_device(qtbot):
 
 @pytest.mark.gui
 def test_idle_screen_record_button_enabled_with_device(qtbot):
-    """Record button is enabled when a valid device serial is provided.
+    """Record button is enabled when device serial AND all required form fields are set.
 
     Spec: Requirement "ADB Device Discovery", Scenario "Single device connected" —
-    Record button MAY be enabled when exactly one authorized device is found.
+    Record button MAY be enabled when exactly one authorized device is found AND
+    version + player fields are filled (Phase 14c: form validation).
     """
     screen = IdleScreen()
     qtbot.addWidget(screen)
 
     screen.set_device_status("emulator-5554")  # valid device serial
+    screen.version_field.setText("1.0.0")
+    screen.player_name_field.setText("tester")
 
     assert screen.record_button.isEnabled()
 
@@ -239,9 +242,11 @@ def test_idle_screen_has_device_status_label(qtbot):
 
 @pytest.mark.gui
 def test_set_device_status_updates_label(qtbot):
-    """set_device_status('ABC123') sets label text to contain 'ABC123' and enables Record.
+    """set_device_status('ABC123') sets label text to contain 'ABC123'.
 
-    Spec: Phase 14b — device status label reflects serial; Record enabled when device present.
+    When all required fields are also set, enables the Record button.
+    Spec: Phase 14b — device status label reflects serial; Record enabled when
+    device + version + player are all present (Phase 14c: form validation).
     """
     screen = IdleScreen()
     qtbot.addWidget(screen)
@@ -249,6 +254,12 @@ def test_set_device_status_updates_label(qtbot):
     screen.set_device_status("ABC123")
 
     assert "ABC123" in screen.device_status_label.text()
+    # Button is still disabled because version/player are empty
+    assert not screen.record_button.isEnabled()
+
+    # Fill all required fields → button enabled
+    screen.version_field.setText("1.0.0")
+    screen.player_name_field.setText("tester")
     assert screen.record_button.isEnabled()
 
 

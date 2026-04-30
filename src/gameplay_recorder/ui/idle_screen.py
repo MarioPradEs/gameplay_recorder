@@ -7,6 +7,9 @@ Record button, and update banner.
 Phase 14b: Rebuilt with QFormLayout for labels-on-left UX, display map for
 dropdown (Zombie Gore → zombie_gore), tooltips on all form fields, and
 device_status_label that reflects the connected device serial.
+
+Phase 14c: Added form validation (_validate_form), _current_serial storage,
+error_banner for packaging errors.
 """
 
 from __future__ import annotations
@@ -81,9 +84,16 @@ class IdleScreen(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
 
-        # ── Banner (outside form layout, spans full width) ─────────────────
+        # ── Internal state ──────────────────────────────────────────────────
+        self._current_serial: str | None = None
+
+        # ── Banners (outside form layout, span full width) ──────────────────
         self.update_banner = _BannerLabel("", self)
         self.update_banner.setVisible(False)
+
+        self.error_banner = _BannerLabel("", self)
+        self.error_banner.setVisible(False)
+        self.error_banner.setStyleSheet("color: #c0392b; background: #fdecea; padding: 4px;")
 
         # ── Form widgets ────────────────────────────────────────────────────
         self.game_dropdown = QComboBox(self)
@@ -109,7 +119,7 @@ class IdleScreen(QWidget):
         self.device_status_label = QLabel("No device connected", self)
 
         self.record_button = QPushButton("Record", self)
-        self.record_button.setEnabled(False)  # requires a device
+        self.record_button.setEnabled(False)  # requires a device + valid form
 
         # ── Layout ──────────────────────────────────────────────────────────
         form = QFormLayout()
@@ -121,8 +131,13 @@ class IdleScreen(QWidget):
 
         root = QVBoxLayout(self)
         root.addWidget(self.update_banner)
+        root.addWidget(self.error_banner)
         root.addLayout(form)
         self.setLayout(root)
+
+        # ── Form validation wiring ──────────────────────────────────────────
+        self.version_field.textChanged.connect(self._validate_form)
+        self.player_name_field.textChanged.connect(self._validate_form)
 
     # ------------------------------------------------------------------
     # Public API
@@ -140,20 +155,42 @@ class IdleScreen(QWidget):
         return self.game_dropdown.currentData()
 
     def set_device_status(self, serial: str | None) -> None:
-        """Update the device status label and enable/disable the Record button.
+        """Update the device status label and re-evaluate form validity.
 
         Args:
             serial: A non-empty device serial string means the device is ready
-                (label set to ``"Device: {serial}"``; Record button enabled).
+                (label set to ``"Device: {serial}"``; _current_serial stored).
                 ``None`` means no device — label reset to ``"No device connected"``;
-                Record button disabled.
+                _current_serial cleared; Record button disabled.
         """
+        self._current_serial = serial
         if serial is not None:
             self.device_status_label.setText(f"Device: {serial}")
-            self.record_button.setEnabled(True)
         else:
             self.device_status_label.setText("No device connected")
-            self.record_button.setEnabled(False)
+        self._validate_form()
+
+    def _validate_form(self) -> None:
+        """Enable the Record button only when all required fields are filled.
+
+        Required: a device serial is set, version_field is non-empty, and
+        player_name_field is non-empty.
+        """
+        ready = (
+            self._current_serial is not None
+            and bool(self.version_field.text().strip())
+            and bool(self.player_name_field.text().strip())
+        )
+        self.record_button.setEnabled(ready)
+
+    def show_error_banner(self, message: str) -> None:
+        """Show the error banner with *message*.
+
+        Args:
+            message: Human-readable error string to display.
+        """
+        self.error_banner.setText(message)
+        self.error_banner.setVisible(True)
 
     def set_update_available(self, version: str | None) -> None:
         """Show or hide the update banner.

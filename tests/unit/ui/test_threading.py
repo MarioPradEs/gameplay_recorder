@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -40,10 +40,13 @@ def test_record_button_click_starts_video_worker(qtbot):
     window = MainWindow()
     qtbot.addWidget(window)
 
-    # Enable the record button (requires a device serial)
+    # Enable the record button (requires device serial + all form fields)
     window.idle_screen.set_device_status("emulator-5554")
+    window.idle_screen.version_field.setText("1.0.0")
+    window.idle_screen.player_name_field.setText("tester")
 
     with (
+        patch("gameplay_recorder.ui.main_window.AdbConnection", spec=True),
         patch(
             "gameplay_recorder.ui.main_window.VideoSegmentRecorder",
             spec=True,
@@ -52,6 +55,7 @@ def test_record_button_click_starts_video_worker(qtbot):
             "gameplay_recorder.ui.main_window.ScreenshotCapture",
             spec=True,
         ),
+        patch("gameplay_recorder.ui.main_window.PackagingWorker", spec=True),
     ):
         mock_vsr_instance = MockVSR.return_value
 
@@ -84,8 +88,11 @@ def test_stop_button_click_stops_workers(qtbot):
     qtbot.addWidget(window)
 
     window.idle_screen.set_device_status("emulator-5554")
+    window.idle_screen.version_field.setText("1.0.0")
+    window.idle_screen.player_name_field.setText("tester")
 
     with (
+        patch("gameplay_recorder.ui.main_window.AdbConnection", spec=True),
         patch(
             "gameplay_recorder.ui.main_window.VideoSegmentRecorder",
             spec=True,
@@ -137,8 +144,11 @@ def test_packaging_worker_started_after_stop(qtbot):
     qtbot.addWidget(window)
 
     window.idle_screen.set_device_status("emulator-5554")
+    window.idle_screen.version_field.setText("1.0.0")
+    window.idle_screen.player_name_field.setText("tester")
 
     with (
+        patch("gameplay_recorder.ui.main_window.AdbConnection", spec=True),
         patch(
             "gameplay_recorder.ui.main_window.VideoSegmentRecorder",
             spec=True,
@@ -523,8 +533,9 @@ def test_packaging_failure_returns_to_idle_with_error_banner(qtbot):
     assert window.idle_screen.error_banner.isVisible(), (
         "error_banner must be visible after packaging failure"
     )
-    assert error_message in window.idle_screen.error_banner.text(), (
-        f"error_banner text must contain the error message. Got: {window.idle_screen.error_banner.text()!r}"
+    banner_text = window.idle_screen.error_banner.text()
+    assert error_message in banner_text, (
+        f"error_banner text must contain the error message. Got: {banner_text!r}"
     )
 
     # Form must be re-enabled (record button should be in its normal state,
