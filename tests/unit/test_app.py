@@ -1,13 +1,17 @@
-"""RED phase — Phase 14.1: App entrypoint tests.
+"""RED phase — Phase 14.1 + Phase 14d.1: App entrypoint tests.
 
 Tests for create_app() and main() in gameplay_recorder.app.
 
 Spec references:
   - Requirement "App Entrypoint": create_app returns QApplication instance.
   - Requirement "Auto-Update Check": update check fires without blocking IDLE state.
+  - Phase 14d.1: main() configures logging via basicConfig at INFO level.
 """
 
 from __future__ import annotations
+
+import logging
+from unittest.mock import patch
 
 import pytest
 from PySide6.QtWidgets import QApplication
@@ -51,3 +55,46 @@ def test_main_window_shown_smoke(qtbot):
     qtbot.addWidget(window)
 
     assert isinstance(window, MainWindow)
+
+
+# ---------------------------------------------------------------------------
+# Phase 14d.1 — Logging configuration
+# ---------------------------------------------------------------------------
+
+
+def test_main_configures_logging():
+    """main() calls logging.basicConfig with level=INFO before returning.
+
+    Phase 14d.1: Without basicConfig, all loggers are silent (no stdout output).
+    This test verifies that main() configures the root logger so that INFO+
+    messages from any module (ScreenshotCapture, VideoSegmentRecorder, etc.)
+    reach the console.
+
+    Spec: Diagnostic requirement — logs must be visible during live runs.
+    """
+    from gameplay_recorder.app import main
+
+    with (
+        patch("logging.basicConfig") as mock_basicConfig,
+        patch("gameplay_recorder.app.create_app"),
+        patch("gameplay_recorder.app.MainWindow"),
+        patch("gameplay_recorder.app.Thread"),
+        patch("gameplay_recorder.app.discover_device", return_value=(None, "no device")),
+    ):
+        # Patch app.exec to avoid blocking the event loop
+        import gameplay_recorder.app as app_module
+
+        fake_app = app_module.create_app.return_value  # type: ignore[attr-defined]
+        fake_app.exec.return_value = 0
+
+        main()
+
+    mock_basicConfig.assert_called_once()
+    call_kwargs = mock_basicConfig.call_args
+    # Must be called with level=logging.INFO (or lower, but INFO is the spec)
+    level_arg = call_kwargs.kwargs.get("level") or (
+        call_kwargs.args[0] if call_kwargs.args else None
+    )
+    assert level_arg == logging.INFO, (
+        f"logging.basicConfig must be called with level=logging.INFO, got level={level_arg!r}"
+    )
