@@ -1,4 +1,4 @@
-"""RED phase — Phase 12.1: UI Widget tests.
+"""RED phase — Phase 12.1 + 14b.1: UI Widget tests.
 
 Tests the individual screen widgets and the update banner.
 Widgets live in separate modules per design:
@@ -11,6 +11,7 @@ Spec references:
   - Requirement "GUI State Machine": IDLE/RECORDING/DONE UI contracts
   - Requirement "ZIP Packaging", Scenario "Valid ZIP produced": DoneScreen ZIP path
   - Requirement "Auto-Update Check": update banner visibility
+  - Phase 14b.1: UX labels, version field, device status label, tooltips
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from PySide6.QtWidgets import QLabel
 from gameplay_recorder.ui.done_screen import DoneScreen
 from gameplay_recorder.ui.idle_screen import IdleScreen
 from gameplay_recorder.ui.recording_screen import RecordingScreen
@@ -150,3 +152,148 @@ def test_update_banner_hidden_when_no_update(qtbot):
     screen.set_update_available(None)
 
     assert not screen.update_banner.isVisible()
+
+
+# ---------------------------------------------------------------------------
+# Phase 14b.1 RED — IdleScreen UX: labels, version field, device status, tooltips
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.gui
+def test_game_dropdown_displays_zombie_gore_with_capitalization(qtbot):
+    """game_dropdown shows 'Zombie Gore' as display text but stores 'zombie_gore' as data.
+
+    Spec: Phase 14b — dropdown display map; game_id in session_meta.json uses snake_case.
+    currentText() == "Zombie Gore" (user-visible), currentData() == "zombie_gore" (game_id).
+    """
+    screen = IdleScreen()
+    qtbot.addWidget(screen)
+
+    assert screen.game_dropdown.currentText() == "Zombie Gore"
+    assert screen.game_dropdown.currentData() == "zombie_gore"
+
+
+@pytest.mark.gui
+def test_idle_screen_has_game_label(qtbot):
+    """IdleScreen has a QLabel with text 'Game' or 'Game:' visible next to the dropdown.
+
+    Spec: Phase 14b — labels-on-left UX requirement from user feedback.
+    """
+    screen = IdleScreen()
+    qtbot.addWidget(screen)
+
+    labels = [lbl.text() for lbl in screen.findChildren(QLabel)]
+    assert any(text in ("Game", "Game:") for text in labels)
+
+
+@pytest.mark.gui
+def test_idle_screen_has_version_label_and_field(qtbot):
+    """IdleScreen has a version_field QLineEdit and a 'Version'/'Version:' label.
+
+    Spec: Requirement 'GUI State Machine' — IDLE state requires version field.
+    """
+    screen = IdleScreen()
+    qtbot.addWidget(screen)
+
+    from PySide6.QtWidgets import QLineEdit
+
+    assert hasattr(screen, "version_field")
+    assert isinstance(screen.version_field, QLineEdit)
+
+    labels = [lbl.text() for lbl in screen.findChildren(QLabel)]
+    assert any(text in ("Version", "Version:") for text in labels)
+
+
+@pytest.mark.gui
+def test_idle_screen_has_player_label(qtbot):
+    """IdleScreen has a QLabel with text 'Player' or 'Player:' next to the name field.
+
+    Spec: Phase 14b — labels-on-left UX requirement.
+    """
+    screen = IdleScreen()
+    qtbot.addWidget(screen)
+
+    labels = [lbl.text() for lbl in screen.findChildren(QLabel)]
+    assert any(text in ("Player", "Player:") for text in labels)
+
+
+@pytest.mark.gui
+def test_idle_screen_has_device_status_label(qtbot):
+    """IdleScreen has a device_status_label QLabel; default text contains 'No device'.
+
+    Spec: Requirement 'GUI State Machine' — IDLE state requires device status display.
+    """
+    screen = IdleScreen()
+    qtbot.addWidget(screen)
+
+    assert hasattr(screen, "device_status_label")
+    assert isinstance(screen.device_status_label, QLabel)
+    assert "no device" in screen.device_status_label.text().lower()
+
+
+@pytest.mark.gui
+def test_set_device_status_updates_label(qtbot):
+    """set_device_status('ABC123') sets label text to contain 'ABC123' and enables Record.
+
+    Spec: Phase 14b — device status label reflects serial; Record enabled when device present.
+    """
+    screen = IdleScreen()
+    qtbot.addWidget(screen)
+
+    screen.set_device_status("ABC123")
+
+    assert "ABC123" in screen.device_status_label.text()
+    assert screen.record_button.isEnabled()
+
+
+@pytest.mark.gui
+def test_set_device_status_none_disables_button_and_resets_label(qtbot):
+    """set_device_status(None) disables Record button and resets label to 'No device'.
+
+    Spec: Phase 14b — when no device, label shows 'No device' and Record stays disabled.
+    """
+    screen = IdleScreen()
+    qtbot.addWidget(screen)
+
+    # First enable, then reset
+    screen.set_device_status("ABC123")
+    screen.set_device_status(None)
+
+    assert "no device" in screen.device_status_label.text().lower()
+    assert not screen.record_button.isEnabled()
+
+
+@pytest.mark.gui
+def test_game_dropdown_has_tooltip(qtbot):
+    """game_dropdown has a non-empty tooltip.
+
+    Spec: Phase 14b — UX request for explanatory tooltips on form fields.
+    """
+    screen = IdleScreen()
+    qtbot.addWidget(screen)
+
+    assert screen.game_dropdown.toolTip() != ""
+
+
+@pytest.mark.gui
+def test_version_field_has_tooltip(qtbot):
+    """version_field has a non-empty tooltip.
+
+    Spec: Phase 14b — UX request for explanatory tooltips.
+    """
+    screen = IdleScreen()
+    qtbot.addWidget(screen)
+
+    assert screen.version_field.toolTip() != ""
+
+
+@pytest.mark.gui
+def test_player_name_field_has_tooltip(qtbot):
+    """player_name_field has a non-empty tooltip.
+
+    Spec: Phase 14b — UX request for explanatory tooltips.
+    """
+    screen = IdleScreen()
+    qtbot.addWidget(screen)
+
+    assert screen.player_name_field.toolTip() != ""
