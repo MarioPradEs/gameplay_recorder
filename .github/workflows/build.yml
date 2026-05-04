@@ -21,12 +21,24 @@ jobs:
               7z e ffmpeg.zip
               "ffmpeg-master-latest-win64-lgpl/bin/ffmpeg.exe"
               -o"resources/ffmpeg" -y
+            scrcpy_url: https://github.com/Genymobile/scrcpy/releases/download/v3.3.4/scrcpy-win64-v3.3.4.zip
+            scrcpy_archive: scrcpy.zip
+            scrcpy_extract_cmd: >-
+              7z x scrcpy.zip -o"resources" -y &&
+              mv resources/scrcpy-win64-v3.3.4 resources/scrcpy_extracted &&
+              cp -r resources/scrcpy_extracted/* resources/scrcpy/ &&
+              rm -rf resources/scrcpy_extracted
           - os: macos-latest
             spec: installer/gameplay_recorder_mac.spec
             ffmpeg_url: https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip
             ffmpeg_archive: ffmpeg.zip
             ffmpeg_extract_cmd: >-
               unzip -j ffmpeg.zip ffmpeg -d resources/ffmpeg
+            scrcpy_url: https://github.com/Genymobile/scrcpy/releases/download/v3.3.4/scrcpy-macos-aarch64-v3.3.4.tar.gz
+            scrcpy_archive: scrcpy.tar.gz
+            scrcpy_extract_cmd: >-
+              mkdir -p resources/scrcpy &&
+              tar -xzf scrcpy.tar.gz --strip-components=1 -C resources/scrcpy
 
     steps:
       - name: Checkout
@@ -47,6 +59,14 @@ jobs:
         run: |
           curl -L "${{ matrix.ffmpeg_url }}" -o "${{ matrix.ffmpeg_archive }}"
           ${{ matrix.ffmpeg_extract_cmd }}
+
+      - name: Download bundled scrcpy
+        # NOTE: scrcpy v3.3.4 — pinned to match the version the codebase was written against.
+        # If upstream renames release archives, update the matrix URLs.
+        run: |
+          mkdir -p resources/scrcpy || true
+          curl -L "${{ matrix.scrcpy_url }}" -o "${{ matrix.scrcpy_archive }}"
+          ${{ matrix.scrcpy_extract_cmd }}
 
       - name: Build with PyInstaller
         run: pyinstaller ${{ matrix.spec }} --noconfirm

@@ -11,6 +11,7 @@ a = Analysis(
     binaries=[],
     datas=[
         ('../resources/ffmpeg', 'resources/ffmpeg'),
+        ('../resources/scrcpy', 'resources/scrcpy'),
     ],
     hiddenimports=[
         'adbutils',

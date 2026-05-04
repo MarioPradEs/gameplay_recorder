@@ -10,6 +10,7 @@ a = Analysis(
     binaries=[],
     datas=[
         (r'..\resources\ffmpeg', 'resources/ffmpeg'),
+        (r'..\resources\scrcpy', 'resources/scrcpy'),
     ],
     hiddenimports=[
         'adbutils',
