@@ -173,8 +173,12 @@ def test_run_emits_recording_started_after_proc_starts():
     """run() emits recording_started signal after scrcpy process is alive.
 
     Design: recording_started fires once, after process confirmed running.
+    Uses Qt.DirectConnection so the slot runs in the emitting thread,
+    bypassing the need for a running event loop in the test.
     """
     import time
+
+    from PySide6.QtCore import Qt
 
     from gameplay_recorder.capture.scrcpy_recorder import ScrcpyRecorder
 
@@ -186,7 +190,7 @@ def test_run_emits_recording_started_after_proc_starts():
     def _on_started():
         started_count[0] += 1
 
-    recorder.recording_started.connect(_on_started)
+    recorder.recording_started.connect(_on_started, Qt.DirectConnection)
 
     with (
         patch("gameplay_recorder.capture.scrcpy_recorder._spawn_scrcpy", return_value=fake_proc),
@@ -294,8 +298,11 @@ def test_run_emits_recording_error_when_output_file_missing():
     """run() emits recording_error when gameplay.mp4 doesn't exist after stop.
 
     Spec: Scenario 'Recording fails to start' — no truncated file left behind.
+    Uses Qt.DirectConnection for cross-thread signal delivery without event loop.
     """
     import time
+
+    from PySide6.QtCore import Qt
 
     from gameplay_recorder.capture.scrcpy_recorder import ScrcpyRecorder
 
@@ -303,7 +310,7 @@ def test_run_emits_recording_error_when_output_file_missing():
     recorder = ScrcpyRecorder(serial="17d4994b", output_path=Path("/tmp/gameplay.mp4"))
 
     errors = []
-    recorder.recording_error.connect(errors.append)
+    recorder.recording_error.connect(errors.append, Qt.DirectConnection)
 
     with (
         patch("gameplay_recorder.capture.scrcpy_recorder._spawn_scrcpy", return_value=fake_proc),
@@ -321,8 +328,11 @@ def test_run_emits_recording_error_when_output_file_is_empty():
     """run() emits recording_error when gameplay.mp4 exists but is zero bytes.
 
     Spec: Scenario 'Recording fails to start' — zero-byte file is invalid.
+    Uses Qt.DirectConnection for cross-thread signal delivery without event loop.
     """
     import time
+
+    from PySide6.QtCore import Qt
 
     from gameplay_recorder.capture.scrcpy_recorder import ScrcpyRecorder
 
@@ -330,7 +340,7 @@ def test_run_emits_recording_error_when_output_file_is_empty():
     recorder = ScrcpyRecorder(serial="17d4994b", output_path=Path("/tmp/gameplay.mp4"))
 
     errors = []
-    recorder.recording_error.connect(errors.append)
+    recorder.recording_error.connect(errors.append, Qt.DirectConnection)
 
     with (
         patch("gameplay_recorder.capture.scrcpy_recorder._spawn_scrcpy", return_value=fake_proc),
@@ -350,8 +360,11 @@ def test_run_emits_recording_finished_with_path_on_success():
     """run() emits recording_finished(Path) when gameplay.mp4 is valid.
 
     Spec: Scenario 'Single-file recording produced' — finished emits the output path.
+    Uses Qt.DirectConnection for cross-thread signal delivery without event loop.
     """
     import time
+
+    from PySide6.QtCore import Qt
 
     from gameplay_recorder.capture.scrcpy_recorder import ScrcpyRecorder
 
@@ -360,7 +373,7 @@ def test_run_emits_recording_finished_with_path_on_success():
     recorder = ScrcpyRecorder(serial="17d4994b", output_path=output_path)
 
     finished_paths = []
-    recorder.recording_finished.connect(finished_paths.append)
+    recorder.recording_finished.connect(finished_paths.append, Qt.DirectConnection)
 
     with (
         patch("gameplay_recorder.capture.scrcpy_recorder._spawn_scrcpy", return_value=fake_proc),
