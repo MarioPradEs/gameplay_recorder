@@ -97,12 +97,30 @@ def check_host_free_space(output_dir: Path, min_gb: float = 1) -> str | None:
         str  — human-readable error message if space is < min_gb.
 
     Spec: Requirement 'Free-Space Pre-Check' (Modified) — host disk, 1 GB threshold.
+    Scenario 'Insufficient storage': message must say "<1 GB free in '<output_dir>'".
 
-    Note: This stub is intentionally minimal for Phase 3.
-    Full implementation arrives in Phase 4.
+    Design decisions:
+    - Uses shutil.disk_usage on the directory (or its parent if dir doesn't exist yet).
+    - OSError is caught defensively — allows recording to proceed rather than blocking.
+    - output_dir may not exist at check time (session_dir created lazily); fall back to parent.
     """
-    # Phase 3 stub — always returns None (OK).
-    # Phase 4 fills in real shutil.disk_usage logic.
+    check_path = output_dir if output_dir.exists() else output_dir.parent
+
+    try:
+        usage = shutil.disk_usage(check_path)
+    except OSError:
+        logger.warning(
+            "check_host_free_space: could not query disk usage for %s — allowing recording",
+            check_path,
+        )
+        return None
+
+    min_bytes = min_gb * 1024**3
+    if usage.free < min_bytes:
+        return (
+            f"Host disk space low (< {min_gb:g} GB free in '{output_dir}'). "
+            "Free space before recording."
+        )
     return None
 
 
