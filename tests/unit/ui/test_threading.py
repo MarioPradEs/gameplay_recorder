@@ -242,15 +242,14 @@ def test_recording_error_shows_banner(qtbot):
 @pytest.mark.gui
 def test_start_recording_passes_real_adb_connection_to_workers(qtbot):
     """Record click calls AdbConnection.select_single_device() and passes the
-    resulting connected instance to workers.
+    resulting connected instance to ScreenshotCapture and TouchEventMonitor.
 
-    Phase 14c.1 (updated by 14c-fix): Workers MUST receive a real, fully-wired
-    AdbConnection (one whose _adb_device is set). Using AdbConnection(serial)
-    alone leaves _adb_device=None → workers crash with AdbCommandError.
-    The correct path is AdbConnection.select_single_device().
+    Phase 14c.1 (updated by 14c-fix + Phase 5): AdbConnection MUST be fully-wired
+    before workers are started. Scope: ScreenshotCapture + TouchEventMonitor
+    (ScrcpyRecorder does NOT receive adb_conn — it takes serial + output_path).
 
-    Verifies: VideoSegmentRecorder and ScreenshotCapture are both instantiated
-    with adb_conn equal to the instance returned by select_single_device().
+    Verifies: AdbConnection.select_single_device() is called, and ScreenshotCapture
+    receives adb_conn equal to the instance returned by select_single_device().
     """
     from gameplay_recorder.adb.connection import AdbConnection
 
@@ -269,14 +268,15 @@ def test_start_recording_passes_real_adb_connection_to_workers(qtbot):
             spec=AdbConnection,
         ) as MockConn,
         patch(
-            "gameplay_recorder.ui.main_window.VideoSegmentRecorder",
+            "gameplay_recorder.ui.main_window.ScrcpyRecorder",
             spec=True,
-        ) as MockVSR,
+        ),
         patch(
             "gameplay_recorder.ui.main_window.ScreenshotCapture",
             spec=True,
         ) as MockSC,
         patch("gameplay_recorder.ui.main_window.PackagingWorker", spec=True),
+        patch("gameplay_recorder.ui.main_window.check_host_free_space", return_value=None),
     ):
         MockConn.select_single_device.return_value = mock_conn
 
@@ -288,18 +288,11 @@ def test_start_recording_passes_real_adb_connection_to_workers(qtbot):
         # AdbConnection.select_single_device() must be called (fully-wired path)
         MockConn.select_single_device.assert_called_once()
 
-        # Both workers receive the real AdbConnection instance (not None)
-        vsr_call_kwargs = MockVSR.call_args
+        # ScreenshotCapture receives the real AdbConnection instance
         sc_call_kwargs = MockSC.call_args
-        assert vsr_call_kwargs is not None, "VideoSegmentRecorder was never called"
         assert sc_call_kwargs is not None, "ScreenshotCapture was never called"
 
-        # Extract adb_conn kwarg or first positional
-        vsr_kwargs = vsr_call_kwargs.kwargs
         sc_kwargs = sc_call_kwargs.kwargs
-        assert vsr_kwargs.get("adb_conn") is mock_conn, (
-            f"VideoSegmentRecorder adb_conn expected mock_conn, got {vsr_kwargs.get('adb_conn')!r}"
-        )
         assert sc_kwargs.get("adb_conn") is mock_conn, (
             f"ScreenshotCapture adb_conn expected mock_conn, got {sc_kwargs.get('adb_conn')!r}"
         )
@@ -829,84 +822,6 @@ def test_recording_screen_timer_ticks_every_second(qtbot):
 
 
 # ---------------------------------------------------------------------------
-# Phase 14d.3 — RED: segment_finished signal increments segment counter
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.gui
-def test_segment_finished_signal_increments_counter(qtbot):
-    """Emitting segment_finished(1, path) from the video worker increments the segment counter.
-
-    Phase 14d.3: VideoSegmentRecorder.segment_finished(int, Path) must be
-    connected to a slot that updates RecordingScreen's segment counter label.
-
-    Verifies:
-    - Before any segment_finished: segment label shows initial state (Segment: 0)
-    - After emitting segment_finished(1, fake_path): label shows "Segment: 1"
-      or "Segments: 1" (any text reflecting count=1).
-    """
-    window = MainWindow()
-    qtbot.addWidget(window)
-
-    window.idle_screen.set_device_status("EMU-1")
-    window.idle_screen.version_field.setText("1.0.0")
-    window.idle_screen.player_name_field.setText("tester")
-
-    # We need the real signal for segment_finished — use a real QObject with signals
-    from PySide6.QtCore import QObject
-    from PySide6.QtCore import Signal as QSignal
-
-    class FakeWorker(QObject):
-        segment_started = QSignal(int)
-        segment_finished = QSignal(int, object)
-        recording_error = QSignal(str)
-
-        def requestInterruption(self):
-            pass
-
-        def start(self):
-            pass
-
-        @property
-        def segments(self):
-            return []
-
-    fake_worker = FakeWorker()
-
-    with (
-        patch("gameplay_recorder.ui.main_window.AdbConnection"),
-        patch(
-            "gameplay_recorder.ui.main_window.VideoSegmentRecorder",
-            return_value=fake_worker,
-        ),
-        patch("gameplay_recorder.ui.main_window.ScreenshotCapture", spec=True),
-        patch("gameplay_recorder.ui.main_window.PackagingWorker", spec=True),
-        patch("gameplay_recorder.ui.main_window.TouchEventMonitor"),
-    ):
-        # Click Record to wire signals
-        qtbot.mouseClick(
-            window.idle_screen.record_button,
-            __import__("PySide6.QtCore", fromlist=["Qt"]).Qt.LeftButton,
-        )
-
-        # Initial segment count label should show 0
-        initial_text = window._recording_screen._segment_label.text()
-        assert "0" in initial_text, (
-            f"Expected initial segment label to contain '0', got {initial_text!r}"
-        )
-
-        # Emit segment_finished(1, path) from the worker
-        fake_path = Path("/tmp/seg_0.mp4")
-        fake_worker.segment_finished.emit(1, fake_path)
-
-        # The segment label must now reflect count=1
-        updated_text = window._recording_screen._segment_label.text()
-        assert "1" in updated_text, (
-            f"After segment_finished(1, ...), segment label must contain '1', got {updated_text!r}"
-        )
-
-
-# ---------------------------------------------------------------------------
 # Phase 14d.5 — RED: DoneScreen buttons wired
 # ---------------------------------------------------------------------------
 
@@ -1032,3 +947,223 @@ def test_recording_error_is_logged_with_full_message(qtbot, caplog):
     assert any("AdbCommandError" in msg for msg in error_messages), (
         f"Full error message must appear in log, got: {error_messages!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 — RED: MainWindow ScrcpyRecorder integration
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.gui
+def test_start_recording_uses_scrcpy_recorder_not_video_segment_recorder(qtbot):
+    """start_recording_session() MUST use ScrcpyRecorder, NOT VideoSegmentRecorder.
+
+    Phase 5.1: After the pivot, ScrcpyRecorder replaces VideoSegmentRecorder entirely.
+
+    Verifies:
+    - ScrcpyRecorder is instantiated when Record is clicked.
+    - VideoSegmentRecorder is NOT imported/called.
+    """
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    window.idle_screen.set_device_status("EMU-1")
+    window.idle_screen.version_field.setText("1.0.0")
+    window.idle_screen.player_name_field.setText("tester")
+
+    with (
+        patch("gameplay_recorder.ui.main_window.AdbConnection", spec=True),
+        patch(
+            "gameplay_recorder.ui.main_window.ScrcpyRecorder",
+            spec=True,
+        ) as MockSR,
+        patch("gameplay_recorder.ui.main_window.ScreenshotCapture", spec=True),
+        patch("gameplay_recorder.ui.main_window.PackagingWorker", spec=True),
+        patch("gameplay_recorder.ui.main_window.TouchEventMonitor"),
+        patch("gameplay_recorder.ui.main_window.check_host_free_space", return_value=None),
+    ):
+        qtbot.mouseClick(
+            window.idle_screen.record_button,
+            __import__("PySide6.QtCore", fromlist=["Qt"]).Qt.LeftButton,
+        )
+
+        # ScrcpyRecorder MUST be instantiated
+        MockSR.assert_called_once()
+        mock_sr_instance = MockSR.return_value
+        # .start() MUST be called on the ScrcpyRecorder instance
+        mock_sr_instance.start.assert_called_once()
+
+
+@pytest.mark.gui
+def test_start_recording_passes_session_dir_gameplay_mp4_to_scrcpy_recorder(qtbot):
+    """ScrcpyRecorder receives output_path == session_dir / 'gameplay.mp4'.
+
+    Phase 5.1: Spec 'scrcpy Video Capture' — output MUST be a single gameplay.mp4
+    written directly to session_dir.
+
+    Verifies: ScrcpyRecorder is instantiated with
+      serial=<device serial>
+      output_path=<session_dir> / 'gameplay.mp4'
+    """
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    window.idle_screen.set_device_status("DEVICE-42")
+    window.idle_screen.version_field.setText("2.0.0")
+    window.idle_screen.player_name_field.setText("bob")
+
+    with (
+        patch("gameplay_recorder.ui.main_window.AdbConnection", spec=True),
+        patch(
+            "gameplay_recorder.ui.main_window.ScrcpyRecorder",
+            spec=True,
+        ) as MockSR,
+        patch("gameplay_recorder.ui.main_window.ScreenshotCapture", spec=True),
+        patch("gameplay_recorder.ui.main_window.PackagingWorker", spec=True),
+        patch("gameplay_recorder.ui.main_window.TouchEventMonitor"),
+        patch("gameplay_recorder.ui.main_window.check_host_free_space", return_value=None),
+    ):
+        qtbot.mouseClick(
+            window.idle_screen.record_button,
+            __import__("PySide6.QtCore", fromlist=["Qt"]).Qt.LeftButton,
+        )
+
+        MockSR.assert_called_once()
+        sr_kwargs = MockSR.call_args.kwargs
+
+        # output_path must be session_dir / 'gameplay.mp4'
+        output_path: Path = sr_kwargs.get("output_path")
+        assert output_path is not None, "ScrcpyRecorder 'output_path' kwarg is missing"
+        assert isinstance(output_path, Path), (
+            f"ScrcpyRecorder 'output_path' must be a Path, got {type(output_path)!r}"
+        )
+        assert output_path.name == "gameplay.mp4", (
+            f"output_path filename must be 'gameplay.mp4', got {output_path.name!r}"
+        )
+        # output_path parent must equal the session_dir
+        assert hasattr(window, "_session_dir"), "MainWindow has no _session_dir after start"
+        assert output_path.parent == window._session_dir, (
+            f"output_path parent {output_path.parent!r} != session_dir {window._session_dir!r}"
+        )
+
+
+@pytest.mark.gui
+def test_start_recording_checks_host_free_space_before_recording(qtbot):
+    """start_recording_session() MUST call check_host_free_space; if error, block recording.
+
+    Phase 5.1: Spec 'Free-Space Pre-Check' (Modified) — host disk 1 GB threshold.
+    Scenario 'Insufficient storage': app shows error banner and does NOT start recording.
+
+    Verifies:
+    - check_host_free_space is called during Record click.
+    - When it returns an error string, ScrcpyRecorder is NOT instantiated.
+    - The error banner on IdleScreen is visible with the error message.
+    - The window stays in IDLE state.
+    """
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    window.idle_screen.set_device_status("EMU-1")
+    window.idle_screen.version_field.setText("1.0.0")
+    window.idle_screen.player_name_field.setText("tester")
+
+    space_error = "Host disk space low (< 1 GB free in '/recordings'). Free space before recording."
+
+    with (
+        patch("gameplay_recorder.ui.main_window.AdbConnection", spec=True),
+        patch(
+            "gameplay_recorder.ui.main_window.ScrcpyRecorder",
+            spec=True,
+        ) as MockSR,
+        patch("gameplay_recorder.ui.main_window.ScreenshotCapture", spec=True),
+        patch("gameplay_recorder.ui.main_window.PackagingWorker", spec=True),
+        patch("gameplay_recorder.ui.main_window.TouchEventMonitor"),
+        patch(
+            "gameplay_recorder.ui.main_window.check_host_free_space",
+            return_value=space_error,
+        ) as MockCHFS,
+    ):
+        qtbot.mouseClick(
+            window.idle_screen.record_button,
+            __import__("PySide6.QtCore", fromlist=["Qt"]).Qt.LeftButton,
+        )
+
+        # check_host_free_space MUST have been called
+        MockCHFS.assert_called_once()
+
+        # ScrcpyRecorder MUST NOT be instantiated when space is low
+        MockSR.assert_not_called()
+
+        # Window MUST remain in IDLE state
+        assert window.stacked.currentIndex() == RecordingState.IDLE.value, (
+            f"Expected IDLE after space-check failure, got state {window.stacked.currentIndex()}"
+        )
+
+        # Error banner MUST be visible with the space error message
+        assert window.idle_screen.error_banner.isVisible(), (
+            "error_banner must be visible after free-space check failure"
+        )
+        assert "Host disk space low" in window.idle_screen.error_banner.text(), (
+            f"error_banner must contain 'Host disk space low', "
+            f"got: {window.idle_screen.error_banner.text()!r}"
+        )
+
+
+@pytest.mark.gui
+def test_start_recording_no_longer_does_adb_free_space_check(qtbot):
+    """start_recording_session() MUST NOT call any ADB /sdcard free-space check.
+
+    Phase 5.1: Spec 'Free-Space Pre-Check' (Modified) — check is now HOST-side only.
+    Old implementation queried device /sdcard via ADB; new implementation uses
+    check_host_free_space() (host shutil.disk_usage). No ADB shell df/stat call.
+
+    Triangulation: verifies that the host-side check is called (not ADB), and
+    that no ADB shell command referencing '/sdcard' is issued during Record.
+
+    Verifies:
+    - check_host_free_space (host path) IS called.
+    - adb_conn.shell() is NOT called with any '/sdcard' argument.
+    """
+    from gameplay_recorder.adb.connection import AdbConnection
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    window.idle_screen.set_device_status("EMU-1")
+    window.idle_screen.version_field.setText("1.0.0")
+    window.idle_screen.player_name_field.setText("tester")
+
+    mock_conn = MagicMock(spec=AdbConnection)
+
+    with (
+        patch(
+            "gameplay_recorder.ui.main_window.AdbConnection",
+            spec=AdbConnection,
+        ) as MockConn,
+        patch("gameplay_recorder.ui.main_window.ScrcpyRecorder", spec=True),
+        patch("gameplay_recorder.ui.main_window.ScreenshotCapture", spec=True),
+        patch("gameplay_recorder.ui.main_window.PackagingWorker", spec=True),
+        patch("gameplay_recorder.ui.main_window.TouchEventMonitor"),
+        patch(
+            "gameplay_recorder.ui.main_window.check_host_free_space",
+            return_value=None,
+        ) as MockCHFS,
+    ):
+        MockConn.select_single_device.return_value = mock_conn
+
+        qtbot.mouseClick(
+            window.idle_screen.record_button,
+            __import__("PySide6.QtCore", fromlist=["Qt"]).Qt.LeftButton,
+        )
+
+        # Host-side check MUST be called
+        MockCHFS.assert_called_once()
+
+        # ADB shell MUST NOT have been called with '/sdcard' (no device-side space check)
+        if mock_conn.shell.called:
+            for call in mock_conn.shell.call_args_list:
+                args = call.args[0] if call.args else ""
+                assert "/sdcard" not in str(args), (
+                    f"ADB shell was called with /sdcard argument: {call!r} — "
+                    "free-space check must be host-side only"
+                )
