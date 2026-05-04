@@ -314,3 +314,22 @@ def test_player_name_field_has_tooltip(qtbot):
     qtbot.addWidget(screen)
 
     assert screen.player_name_field.toolTip() != ""
+
+
+# ---------------------------------------------------------------------------
+# Phase 6.3 RED — RecordingScreen must not have segment counter post-pivot
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.gui
+def test_recording_screen_no_longer_has_segment_label(qtbot):
+    """After scrcpy pivot, RecordingScreen must not have a segment counter widget."""
+    from gameplay_recorder.ui.recording_screen import RecordingScreen
+
+    screen = RecordingScreen()
+    qtbot.addWidget(screen)
+    # Pre-pivot RecordingScreen had `_segment_label` (counted MP4 segments).
+    # Post-pivot it must not exist (single-file recording, no segments).
+    assert not hasattr(screen, "_segment_label"), (
+        "RecordingScreen._segment_label must be removed in Phase 6"
+    )
