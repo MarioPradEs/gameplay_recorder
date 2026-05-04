@@ -7,7 +7,6 @@ GREEN implementation comes in Batch 1.2.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest

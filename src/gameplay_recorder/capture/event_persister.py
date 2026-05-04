@@ -42,7 +42,7 @@ class EventPersister(QThread):
 
     def __init__(
         self,
-        monitor: "TouchEventMonitor",
+        monitor: TouchEventMonitor,
         output_path: Path,
         drain_interval_ms: int = 250,
         parent=None,
@@ -80,7 +80,7 @@ class EventPersister(QThread):
             self.finished_clean.emit(total)
 
     @staticmethod
-    def _format_event(ev: "RawTouchEvent") -> str:
+    def _format_event(ev: RawTouchEvent) -> str:
         """Serialize a RawTouchEvent to a single JSON line with the 5-field whitelist."""
         return json.dumps(
             {

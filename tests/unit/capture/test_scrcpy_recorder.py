@@ -13,7 +13,6 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -395,7 +394,6 @@ def test_run_logs_lifecycle_at_info_level():
 
     Spec: design decision — lifecycle events logged at INFO level.
     """
-    import logging
     import time
 
     from gameplay_recorder.capture.scrcpy_recorder import ScrcpyRecorder
@@ -409,7 +407,6 @@ def test_run_logs_lifecycle_at_info_level():
         patch("pathlib.Path.stat") as mock_stat,
     ):
         mock_stat.return_value.st_size = 1024
-        import logging
 
         with patch("gameplay_recorder.capture.scrcpy_recorder.logger") as mock_logger:
             recorder.start()
@@ -452,7 +449,6 @@ def test_check_host_free_space_returns_message_below_threshold():
 
     Spec: Scenario 'Insufficient storage' — message must contain '<1 GB' and the dir.
     """
-    import shutil
 
     from gameplay_recorder.capture.scrcpy_recorder import check_host_free_space
 
@@ -496,7 +492,6 @@ def test_check_host_free_space_falls_back_to_parent_dir_if_dir_missing():
     Spec/Design: output_dir may not be created yet at check time (session_dir is
     created lazily). Fall back to parent so disk_usage doesn't raise FileNotFoundError.
     """
-    import shutil
 
     from gameplay_recorder.capture.scrcpy_recorder import check_host_free_space
 

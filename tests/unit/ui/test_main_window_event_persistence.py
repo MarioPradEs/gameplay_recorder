@@ -11,7 +11,7 @@ GREEN implementation comes in Batch 3.2.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from PySide6.QtCore import Qt
@@ -111,7 +111,7 @@ def test_start_recording_session_instantiates_and_starts_event_persister(
 def test_stop_recording_session_requests_interruption_and_waits_event_persister(
     qtbot, tmp_path, monkeypatch
 ):
-    """REQ-EP-7: stop_recording_session must call requestInterruption + wait(1000) on EventPersister."""
+    """REQ-EP-7: stop_recording_session calls requestInterruption + wait(1000) on EventPersister."""
     monkeypatch.setattr("gameplay_recorder.ui.main_window.DEFAULT_OUTPUT_DIR", tmp_path)
 
     window = MainWindow()
