@@ -35,6 +35,8 @@ installer/dist/
 # Bundled binaries (fetched in CI, not committed)
 resources/ffmpeg/*
 !resources/ffmpeg/.gitkeep
+resources/scrcpy/*
+!resources/scrcpy/.gitkeep
 
 # Environment files
 .env
