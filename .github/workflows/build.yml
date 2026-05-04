@@ -63,6 +63,10 @@ jobs:
       - name: Download bundled scrcpy
         # NOTE: scrcpy v3.3.4 — pinned to match the version the codebase was written against.
         # If upstream renames release archives, update the matrix URLs.
+        # shell: bash forced because scrcpy_extract_cmd uses bash builtins (mv, cp -r, rm -rf)
+        # which are not available in pwsh (the default shell on windows-latest runners).
+        # Git Bash is preinstalled on GitHub-hosted Windows runners.
+        shell: bash
         run: |
           mkdir -p resources/scrcpy || true
           curl -L "${{ matrix.scrcpy_url }}" -o "${{ matrix.scrcpy_archive }}"
