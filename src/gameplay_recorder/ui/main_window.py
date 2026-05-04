@@ -28,9 +28,9 @@ from PySide6.QtWidgets import (
 
 from gameplay_recorder.adb.connection import AdbConnection
 from gameplay_recorder.capture.event_monitor import TouchEventMonitor
+from gameplay_recorder.capture.scrcpy_recorder import ScrcpyRecorder, check_host_free_space
 from gameplay_recorder.capture.screenshot_capture import ScreenshotCapture
-from gameplay_recorder.capture.video_recorder import VideoSegmentRecorder
-from gameplay_recorder.config import DEFAULT_OUTPUT_DIR, SCREENSHOT_INTERVAL_S, SEGMENT_DURATION_S
+from gameplay_recorder.config import DEFAULT_OUTPUT_DIR, SCREENSHOT_INTERVAL_S
 from gameplay_recorder.models.session import RecordingState, SessionMeta
 from gameplay_recorder.packaging.worker import PackagingWorker
 from gameplay_recorder.ui.done_screen import DoneScreen
@@ -125,7 +125,7 @@ class MainWindow(QMainWindow):
         self._recording_screen.stop_button.clicked.connect(self.stop_recording_session)
 
         # Worker handles (None when no recording is active).
-        self._video_worker: VideoSegmentRecorder | None = None
+        self._video_worker: ScrcpyRecorder | None = None
         self._screenshot_worker: ScreenshotCapture | None = None
         self._event_monitor: TouchEventMonitor | None = None
         self._packaging_worker: PackagingWorker | None = None
@@ -202,6 +202,16 @@ class MainWindow(QMainWindow):
             self.idle_screen.show_error_banner("Please fill version and player name")
             return
 
+        # ── Free-space pre-check (host-side, Phase 5) ─────────────────────
+        # Spec: "Free-Space Pre-Check" — check host disk for ≥ 1 GB BEFORE
+        # spinning up workers. ADB-side /sdcard checks are removed (scrcpy
+        # writes directly to the host).
+        space_error = check_host_free_space(DEFAULT_OUTPUT_DIR)
+        if space_error is not None:
+            logger.warning("start_recording_session: host free-space check failed: %s", space_error)
+            self.idle_screen.show_error_banner(space_error)
+            return
+
         # ── Build live AdbConnection (fully wired — _adb_device set) ─────
         try:
             self._adb_conn = AdbConnection.select_single_device()
@@ -228,10 +238,12 @@ class MainWindow(QMainWindow):
         self._session_dir = session_dir
 
         # ── Create workers with real args ─────────────────────────────────
-        self._video_worker = VideoSegmentRecorder(
-            adb_conn=self._adb_conn,
-            local_dir=self._session_dir,
-            duration=SEGMENT_DURATION_S,
+        # Phase 5: ScrcpyRecorder replaces VideoSegmentRecorder. It takes a
+        # device serial + a host output path (single gameplay.mp4 file), and
+        # does NOT receive an AdbConnection — scrcpy spawns its own ADB.
+        self._video_worker = ScrcpyRecorder(
+            serial=serial,
+            output_path=self._session_dir / "gameplay.mp4",
         )
         self._screenshot_worker = ScreenshotCapture(
             adb_conn=self._adb_conn,
@@ -241,8 +253,6 @@ class MainWindow(QMainWindow):
 
         # Wire error signal before starting.
         self._video_worker.recording_error.connect(self._on_recording_error)
-        # Wire segment_finished to update the segment counter.
-        self._video_worker.segment_finished.connect(self._on_segment_finished)
 
         # Create and start TouchEventMonitor (writes events.jsonl).
         self._stop_event = threading.Event()
@@ -289,7 +299,10 @@ class MainWindow(QMainWindow):
             )
 
         # Create and start PackagingWorker with real args.
-        segments = list(self._video_worker.segments) if self._video_worker is not None else []
+        # Phase 5: scrcpy produces a single gameplay.mp4 inside session_dir,
+        # so PackagingWorker no longer needs a list of segment paths.
+        gameplay_video = (self._session_dir / "gameplay.mp4") if self._session_dir else None
+        segments = [gameplay_video] if gameplay_video is not None else []
         self._packaging_worker = PackagingWorker(
             segments=segments,
             session_dir=self._session_dir or Path("."),
@@ -359,19 +372,6 @@ class MainWindow(QMainWindow):
             return
         elapsed = int(time.time() - self._start_time)
         self._recording_screen.update_elapsed(elapsed)
-
-    def _on_segment_finished(self, index: int, path: object) -> None:
-        """Update the segment counter label when a segment is completed.
-
-        Args:
-            index: The segment index (0-based — 0 = first segment finished).
-            path:  The local Path of the pulled segment file.
-
-        Phase 14d.3: Connected to VideoSegmentRecorder.segment_finished.
-        Displays the segment index so the first emission (index=0) shows "Segment: 0",
-        second emission (index=1) shows "Segment: 1", etc.
-        """
-        self._recording_screen._segment_label.setText(f"Segment: {index}")
 
     def _on_open_folder(self) -> None:
         """Open the OS file manager at the ZIP's parent directory.
