@@ -419,3 +419,112 @@ def test_run_logs_lifecycle_at_info_level():
 
         # At least one info call was made during the lifecycle
         assert mock_logger.info.called, "logger.info() must be called during recording lifecycle"
+
+
+# ---------------------------------------------------------------------------
+# Phase 4.1 — check_host_free_space (RED)
+# ---------------------------------------------------------------------------
+
+
+def test_check_host_free_space_returns_none_above_threshold():
+    """check_host_free_space() calls shutil.disk_usage and returns None when free space >= 1 GB.
+
+    Spec: Scenario 'Sufficient storage' — recording can proceed without warning.
+    None return means OK. disk_usage MUST be called — proves the stub was replaced.
+    """
+    from gameplay_recorder.capture.scrcpy_recorder import check_host_free_space
+
+    # 2 GB free — well above the 1 GB threshold
+    two_gb = 2 * 1024**3
+    fake_usage = type("DiskUsage", (), {"free": two_gb})()
+
+    with patch(
+        "gameplay_recorder.capture.scrcpy_recorder.shutil.disk_usage", return_value=fake_usage
+    ) as mock_du:
+        result = check_host_free_space(Path("/some/output/dir"))
+
+    assert mock_du.called, "shutil.disk_usage must be called — stub still active if this fails"
+    assert result is None, "Must return None (OK) when free space >= 1 GB"
+
+
+def test_check_host_free_space_returns_message_below_threshold():
+    """check_host_free_space() returns an error string when free space < 1 GB.
+
+    Spec: Scenario 'Insufficient storage' — message must contain '<1 GB' and the dir.
+    """
+    import shutil
+
+    from gameplay_recorder.capture.scrcpy_recorder import check_host_free_space
+
+    # 500 MB free — below the 1 GB threshold
+    half_gb = 512 * 1024**2
+    fake_usage = type("DiskUsage", (), {"free": half_gb})()
+    output_dir = Path("/some/output/dir")
+
+    with patch(
+        "gameplay_recorder.capture.scrcpy_recorder.shutil.disk_usage", return_value=fake_usage
+    ):
+        result = check_host_free_space(output_dir)
+
+    assert result is not None, "Must return an error string when free space < 1 GB"
+    assert "1 GB" in result, f"Error message must mention '1 GB': {result!r}"
+    assert str(output_dir) in result, f"Error message must include the output dir path: {result!r}"
+
+
+def test_check_host_free_space_returns_none_on_oserror():
+    """check_host_free_space() attempts disk_usage, catches OSError and returns None.
+
+    Design: defensive fallback — OSError means we can't determine free space,
+    so we allow recording to proceed (None = OK) rather than blocking the user.
+    disk_usage MUST be called (and raise) — proves the stub was replaced.
+    """
+    from gameplay_recorder.capture.scrcpy_recorder import check_host_free_space
+
+    with patch(
+        "gameplay_recorder.capture.scrcpy_recorder.shutil.disk_usage",
+        side_effect=OSError("Permission denied"),
+    ) as mock_du:
+        result = check_host_free_space(Path("/restricted/dir"))
+
+    assert mock_du.called, "shutil.disk_usage must be called — stub still active if this fails"
+    assert result is None, "Must return None (defensive) on OSError — do not block recording"
+
+
+def test_check_host_free_space_falls_back_to_parent_dir_if_dir_missing():
+    """check_host_free_space() uses parent dir when the output dir does not exist yet.
+
+    Spec/Design: output_dir may not be created yet at check time (session_dir is
+    created lazily). Fall back to parent so disk_usage doesn't raise FileNotFoundError.
+    """
+    import shutil
+
+    from gameplay_recorder.capture.scrcpy_recorder import check_host_free_space
+
+    two_gb = 2 * 1024**3
+    fake_usage = type("DiskUsage", (), {"free": two_gb})()
+
+    # A path whose parent is a real dir but the dir itself does not exist
+    nonexistent_dir = Path("/nonexistent/session/dir/that/does/not/exist")
+
+    called_with = []
+
+    def _fake_disk_usage(path):
+        called_with.append(path)
+        return fake_usage
+
+    with (
+        patch(
+            "gameplay_recorder.capture.scrcpy_recorder.shutil.disk_usage",
+            side_effect=_fake_disk_usage,
+        ),
+        patch("gameplay_recorder.capture.scrcpy_recorder.Path.exists", return_value=False),
+    ):
+        result = check_host_free_space(nonexistent_dir)
+
+    assert result is None, "Must return None when parent dir has enough free space"
+    assert len(called_with) >= 1, "disk_usage must be called (on some path)"
+    # The fallback path must NOT be the missing dir itself — it must be an ancestor
+    assert called_with[0] != nonexistent_dir, (
+        f"disk_usage must NOT be called with the nonexistent dir {nonexistent_dir!r}; "
+        f"got {called_with[0]!r}"
+    )
