@@ -9,8 +9,8 @@ TouchEventMonitor enqueues RawTouchEvent objects from `getevent` parsing;
 EventPersister drains the queue and persists to disk in the format expected by
 `packaging/zipper.py` and validated by `packaging/validation.py`.
 
-Phase 1.2 GREEN: minimal happy-path implementation. Edge cases (final drain on
-interruption, error signals, exit-within-500ms guarantee) land in Phase 2.
+Phase 2.2: edge cases — final drain after interruption, error/finished_clean
+signals, defensive try/except/finally around all I/O.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QThread
+from PySide6.QtCore import QThread, Signal
 
 if TYPE_CHECKING:
     from gameplay_recorder.capture.event_monitor import TouchEventMonitor
@@ -31,6 +31,14 @@ logger = logging.getLogger(__name__)
 
 class EventPersister(QThread):
     """Drains a TouchEventMonitor and persists events to a JSONL file."""
+
+    # Emitted on any I/O failure during run(). The application thread can connect
+    # to surface the error in UI; the persister itself logs the exception.
+    error = Signal(str)
+
+    # Emitted when run() exits, with the total number of events written.
+    # Always emitted exactly once, regardless of normal exit or error path.
+    finished_clean = Signal(int)
 
     def __init__(
         self,
@@ -45,16 +53,31 @@ class EventPersister(QThread):
         self._drain_interval_ms = drain_interval_ms
 
     def run(self) -> None:
-        # Open in append mode so we don't truncate any pre-existing empty file
-        # created by main_window at session start (REQ-EP-8).
-        with self._output_path.open("a", encoding="utf-8") as fh:
-            while not self.isInterruptionRequested():
-                events = self._monitor.drain()
-                for ev in events:
+        total = 0
+        try:
+            with self._output_path.open("a", encoding="utf-8") as fh:
+                while not self.isInterruptionRequested():
+                    events = self._monitor.drain()
+                    for ev in events:
+                        fh.write(self._format_event(ev) + "\n")
+                    if events:
+                        fh.flush()
+                        total += len(events)
+                    self.msleep(self._drain_interval_ms)
+
+                # Final drain after interruption — captures events that arrived
+                # between the last in-loop drain and the interruption request.
+                final_events = self._monitor.drain()
+                for ev in final_events:
                     fh.write(self._format_event(ev) + "\n")
-                if events:
+                if final_events:
                     fh.flush()
-                self.msleep(self._drain_interval_ms)
+                    total += len(final_events)
+        except Exception as exc:  # noqa: BLE001 — boundary; we re-emit and log
+            logger.exception("EventPersister: I/O error during run()")
+            self.error.emit(str(exc))
+        finally:
+            self.finished_clean.emit(total)
 
     @staticmethod
     def _format_event(ev: "RawTouchEvent") -> str:
