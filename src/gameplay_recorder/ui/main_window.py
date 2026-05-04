@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 
 from gameplay_recorder.adb.connection import AdbConnection
 from gameplay_recorder.capture.event_monitor import TouchEventMonitor
+from gameplay_recorder.capture.event_persister import EventPersister
 from gameplay_recorder.capture.scrcpy_recorder import ScrcpyRecorder, check_host_free_space
 from gameplay_recorder.capture.screenshot_capture import ScreenshotCapture
 from gameplay_recorder.config import DEFAULT_OUTPUT_DIR, SCREENSHOT_INTERVAL_S
@@ -128,6 +129,7 @@ class MainWindow(QMainWindow):
         self._video_worker: ScrcpyRecorder | None = None
         self._screenshot_worker: ScreenshotCapture | None = None
         self._event_monitor: TouchEventMonitor | None = None
+        self._event_persister: EventPersister | None = None
         self._packaging_worker: PackagingWorker | None = None
 
         # Session state (populated by start_recording_session, used by stop).
@@ -237,6 +239,12 @@ class MainWindow(QMainWindow):
         session_dir.mkdir(parents=True, exist_ok=True)
         self._session_dir = session_dir
 
+        # ── Create empty events.jsonl ──────────────────────────────────────
+        # REQ-EP-8: zero-touch sessions still produce a valid (empty) events.jsonl.
+        # EventPersister will append to it as touches arrive.
+        events_jsonl = session_dir / "events.jsonl"
+        events_jsonl.touch()
+
         # ── Create workers with real args ─────────────────────────────────
         # Phase 5: ScrcpyRecorder replaces VideoSegmentRecorder. It takes a
         # device serial + a host output path (single gameplay.mp4 file), and
@@ -254,13 +262,20 @@ class MainWindow(QMainWindow):
         # Wire error signal before starting.
         self._video_worker.recording_error.connect(self._on_recording_error)
 
-        # Create and start TouchEventMonitor (writes events.jsonl).
+        # Create and start TouchEventMonitor (producer of touch events).
         self._stop_event = threading.Event()
         self._event_monitor = TouchEventMonitor(
             adb=self._adb_conn,
             stop_event=self._stop_event,
         )
         self._event_monitor.start()
+
+        # Create and start EventPersister (consumer that writes events.jsonl).
+        self._event_persister = EventPersister(
+            monitor=self._event_monitor,
+            output_path=events_jsonl,
+        )
+        self._event_persister.start()
 
         self._video_worker.start()
         self._screenshot_worker.start()
@@ -277,13 +292,31 @@ class MainWindow(QMainWindow):
         Spec: Requirement "Segmented Video Capture" — graceful stop.
         Phase 14c: Uses real session_dir and meta stored during start_recording_session.
         """
+        # Phase 6 (event-persistence): request interruption on ALL capture workers
+        # first (non-blocking signals), then wait for each one in turn (blocking,
+        # with timeouts) before starting PackagingWorker. This eliminates the
+        # race condition where the zipper would read a half-written gameplay.mp4
+        # or fail because EventPersister had not yet flushed events.jsonl.
         if self._video_worker is not None:
             self._video_worker.requestInterruption()
+        if self._event_persister is not None:
+            self._event_persister.requestInterruption()
         if self._screenshot_worker is not None:
             self._screenshot_worker.requestInterruption()
         if self._stop_event is not None:
             self._stop_event.set()
         self._elapsed_timer.stop()
+
+        # ── Wait for capture workers to finish writing ─────────────────────
+        # Order: video first (longest wait — scrcpy needs to flush MP4 + close
+        # cleanly, ~5s typical, 7s safety bound), then events, then screenshots.
+        # REQ-EP-6, REQ-EP-7.
+        if self._video_worker is not None:
+            self._video_worker.wait(7000)
+        if self._event_persister is not None:
+            self._event_persister.wait(1000)
+        if self._screenshot_worker is not None:
+            self._screenshot_worker.wait(1000)
 
         # Update duration now that the session is ending.
         if self._meta is not None and self._start_time is not None:
