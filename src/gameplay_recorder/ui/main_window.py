@@ -299,12 +299,8 @@ class MainWindow(QMainWindow):
             )
 
         # Create and start PackagingWorker with real args.
-        # Phase 5: scrcpy produces a single gameplay.mp4 inside session_dir,
-        # so PackagingWorker no longer needs a list of segment paths.
-        gameplay_video = (self._session_dir / "gameplay.mp4") if self._session_dir else None
-        segments = [gameplay_video] if gameplay_video is not None else []
+        # Phase 5: scrcpy produces a single gameplay.mp4 inside session_dir.
         self._packaging_worker = PackagingWorker(
-            segments=segments,
             session_dir=self._session_dir or Path("."),
             meta=self._meta,  # type: ignore[arg-type]
             output_dir=DEFAULT_OUTPUT_DIR,

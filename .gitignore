@@ -42,3 +42,7 @@ resources/scrcpy/*
 .env
 .env.local
 .env.*.local
+
+# Test artifacts
+.coverage
+test.mp4

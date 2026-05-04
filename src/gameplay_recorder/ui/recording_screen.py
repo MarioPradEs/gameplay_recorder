@@ -1,7 +1,7 @@
 """Recording state screen widget.
 
 Spec: Requirement "GUI State Machine" — RECORDING state.
-Shows elapsed timer, segment counter, Stop button, and error banner.
+Shows elapsed timer, Stop button, and error banner.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ class _BannerLabel(QLabel):
 
 
 class RecordingScreen(QWidget):
-    """Recording state screen — elapsed timer, segment counter, Stop button, error banner.
+    """Recording state screen — elapsed timer, Stop button, error banner.
 
     Attributes:
         timer_label (QLabel): displays elapsed time formatted as ``M:SS``.
@@ -52,13 +52,11 @@ class RecordingScreen(QWidget):
         self.error_banner.setVisible(False)
 
         self.timer_label = QLabel("0:00", self)
-        self._segment_label = QLabel("Segment: 0", self)
         self.stop_button = QPushButton("Stop", self)
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.error_banner)
         layout.addWidget(self.timer_label)
-        layout.addWidget(self._segment_label)
         layout.addWidget(self.stop_button)
         self.setLayout(layout)
 
