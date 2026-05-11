@@ -403,3 +403,64 @@ class TestTouchEventMonitorRaisesOnNoDevice:
         monitor = TouchEventMonitor(adb=adb, stop_event=stop_event)
         with pytest.raises(TouchDeviceNotFoundError):
             monitor.start()  # no node= provided → triggers auto-detect → None → raises
+
+
+# ─── Phase 4.7: single-device getevent format (no <device>: prefix) ──────────
+
+
+class TestParseLineSingleDeviceFormat:
+    """getevent -l -t <single_node> omits the device prefix in each line.
+
+    Empirical evidence: running
+        adb shell getevent -lt /dev/input/event8
+    on OnePlus CPH2581 yields lines like:
+        [   17087.022366] EV_ABS       ABS_MT_POSITION_X    00004019
+    with NO /dev/input/eventN: prefix. The old regex required the prefix as
+    mandatory → 100% parse failure → 0 events enqueued → events.jsonl empty.
+    """
+
+    def test_parse_line_handles_single_device_format_without_prefix(self) -> None:
+        """_LINE_RE must match a getevent line with NO <device>: prefix.
+
+        Empirical fixture taken from real device output:
+          adb shell getevent -lt /dev/input/event8  (OnePlus CPH2581)
+        """
+        from gameplay_recorder.capture.event_monitor import _LINE_RE
+
+        line = "[   17087.022366] EV_ABS       ABS_MT_POSITION_X    00004019"
+        m = _LINE_RE.search(line)
+        assert m is not None, (
+            "Regex must match single-device getevent format (no <device>: prefix). "
+            f"Line was: {line!r}"
+        )
+        assert m.group("ev_type") == "EV_ABS"
+        assert m.group("ev_code") == "ABS_MT_POSITION_X"
+        assert m.group("value") == "00004019"
+
+    def test_full_touch_sequence_single_device_format_enqueues_event(self) -> None:
+        """A 4-line DOWN tap without prefix must enqueue at least one RawTouchEvent."""
+        lines = [
+            "[   17087.022366] EV_ABS       ABS_MT_TRACKING_ID   00000010",
+            "[   17087.022366] EV_ABS       ABS_MT_POSITION_X    00004019",
+            "[   17087.022366] EV_ABS       ABS_MT_POSITION_Y    0000774f",
+            "[   17087.022366] EV_SYN       SYN_REPORT           00000000",
+        ]
+        events = _run_monitor_sync(lines)
+        assert len(events) >= 1, (
+            f"Expected at least 1 RawTouchEvent from single-device format, "
+            f"got {len(events)}: {events}"
+        )
+
+    def test_parse_line_still_matches_multi_device_format_with_prefix(self) -> None:
+        """Backward-compat: the regex must ALSO match multi-device format WITH prefix."""
+        from gameplay_recorder.capture.event_monitor import _LINE_RE
+
+        line = "[   17087.022366] /dev/input/event8: EV_ABS       ABS_MT_POSITION_X    00004019"
+        m = _LINE_RE.search(line)
+        assert m is not None, (
+            "Regex must still match multi-device format (with <device>: prefix). "
+            f"Line was: {line!r}"
+        )
+        assert m.group("ev_type") == "EV_ABS"
+        assert m.group("ev_code") == "ABS_MT_POSITION_X"
+        assert m.group("value") == "00004019"
