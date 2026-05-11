@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QApplication
 
 from gameplay_recorder import __version__
 from gameplay_recorder.adb.connection import discover_device
+from gameplay_recorder.capture.event_monitor import detect_touch_device
 from gameplay_recorder.ui.main_window import MainWindow
 from gameplay_recorder.update.checker import check_for_update
 
@@ -94,6 +95,21 @@ def main() -> int:
         serial = None
 
     window.idle_screen.set_device_status(serial)
+
+    # Detect the touchscreen input device on the phone so the IdleScreen knows
+    # whether to enable Record directly, or to surface the escape-hatch UI.
+    # detect_touch_device() runs `adb shell getevent -lp` and may fail if the
+    # device disappears or adb errors out — swallow and treat as "no touch".
+    if serial is not None:
+        try:
+            touch_device = detect_touch_device(serial)
+        except Exception:  # noqa: BLE001
+            logger.exception("Unexpected error from detect_touch_device()")
+            touch_device = None
+    else:
+        touch_device = None
+
+    window.idle_screen.set_touch_device(touch_device)
 
     window.show()
     return app.exec()
