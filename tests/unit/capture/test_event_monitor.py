@@ -7,6 +7,7 @@ Tests cover:
 - Malformed line graceful skip
 - Stop terminates stream
 - No input injection possible (defensive)
+- detect_touch_device module-level function (scoring heuristic, -lp flag, None return)
 
 getevent -l -t line format tested:
     [<timestamp>] /dev/input/eventN: EV_TYPE  EV_CODE  <hex_value>
@@ -17,8 +18,10 @@ from __future__ import annotations
 import threading
 from unittest.mock import MagicMock
 
+import pytest
+
 from gameplay_recorder.adb.connection import AdbConnection
-from gameplay_recorder.capture.event_monitor import TouchEventMonitor
+from gameplay_recorder.capture.event_monitor import TouchEventMonitor, detect_touch_device
 from gameplay_recorder.models.touch_event import RawTouchEvent
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -268,3 +271,135 @@ class TestEventMonitorDoesNotCallInputInjection:
             assert not getattr(adb, method, MagicMock()).called, (
                 f"TouchEventMonitor called banned method: {method!r}"
             )
+
+
+# ─── detect_touch_device (module-level function, scoring heuristic) ──────────
+
+
+class TestDetectTouchDevice:
+    def test_detect_touch_device_uses_lp_flag(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Confirm the adb invocation uses -lp, not -p."""
+        captured: dict = {}
+
+        def fake_run(cmd, *args, **kwargs):  # noqa: ANN001
+            captured["cmd"] = cmd
+            result = MagicMock()
+            result.stdout = ""
+            result.returncode = 0
+            return result
+
+        monkeypatch.setattr("gameplay_recorder.capture.event_monitor.subprocess.run", fake_run)
+        detect_touch_device("17d4994b")
+        cmd = captured["cmd"]
+        # cmd is a list like ["adb", "-s", "17d4994b", "shell", "getevent", "-lp"]
+        assert "-lp" in cmd
+        assert "-p" not in [c for c in cmd if c != "-lp"]  # not the bare -p
+
+    def test_detect_touch_device_returns_none_when_no_touchscreen(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When no device has ABS_MT_POSITION_X+Y, return None (no silent fallback)."""
+        fake_output = """add device 1: /dev/input/event0
+  name:     "PowerKey"
+  events:
+    KEY (0001): KEY_POWER             KEY_VOLUMEUP
+"""
+        monkeypatch.setattr(
+            "gameplay_recorder.capture.event_monitor.subprocess.run",
+            lambda *a, **kw: MagicMock(stdout=fake_output, returncode=0),
+        )
+        result = detect_touch_device("17d4994b")
+        assert result is None
+
+    def test_detect_touch_device_picks_mt_capable_device(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Single MT-capable device is returned."""
+        fake_output = """add device 1: /dev/input/event0
+  name:     "PowerKey"
+  events:
+    KEY (0001): KEY_POWER
+
+add device 2: /dev/input/event8
+  name:     "touchpanel"
+  events:
+    ABS (0003): ABS_MT_POSITION_X     ABS_MT_POSITION_Y
+                ABS_MT_TRACKING_ID
+  input props:
+    INPUT_PROP_DIRECT
+"""
+        monkeypatch.setattr(
+            "gameplay_recorder.capture.event_monitor.subprocess.run",
+            lambda *a, **kw: MagicMock(stdout=fake_output, returncode=0),
+        )
+        result = detect_touch_device("17d4994b")
+        assert result == "/dev/input/event8"
+
+    def test_detect_touch_device_picks_highest_score_when_multiple_candidates(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When multiple MT-capable devices exist, picks the one with highest score."""
+        fake_output = """add device 1: /dev/input/event5
+  name:     "secondary_mt"
+  events:
+    ABS (0003): ABS_MT_POSITION_X     ABS_MT_POSITION_Y
+
+add device 2: /dev/input/event8
+  name:     "touchpanel"
+  events:
+    ABS (0003): ABS_MT_POSITION_X     ABS_MT_POSITION_Y
+                ABS_MT_TRACKING_ID
+  input props:
+    INPUT_PROP_DIRECT
+"""
+        monkeypatch.setattr(
+            "gameplay_recorder.capture.event_monitor.subprocess.run",
+            lambda *a, **kw: MagicMock(stdout=fake_output, returncode=0),
+        )
+        result = detect_touch_device("17d4994b")
+        # event8: +10+10+5+5+2 = 32, event5: +10+10 = 20
+        assert result == "/dev/input/event8"
+
+    def test_detect_touch_device_threshold_requires_both_x_and_y(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A device with only ABS_MT_POSITION_X (no Y) must NOT be a candidate."""
+        fake_output = """add device 1: /dev/input/event5
+  name:     "incomplete_mt"
+  events:
+    ABS (0003): ABS_MT_POSITION_X
+"""
+        monkeypatch.setattr(
+            "gameplay_recorder.capture.event_monitor.subprocess.run",
+            lambda *a, **kw: MagicMock(stdout=fake_output, returncode=0),
+        )
+        result = detect_touch_device("17d4994b")
+        assert result is None
+
+    def test_detect_touch_device_raises_on_subprocess_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When subprocess.run raises, detect_touch_device returns None gracefully."""
+        monkeypatch.setattr(
+            "gameplay_recorder.capture.event_monitor.subprocess.run",
+            lambda *a, **kw: (_ for _ in ()).throw(OSError("adb not found")),
+        )
+        result = detect_touch_device("17d4994b")
+        assert result is None
+
+
+class TestTouchEventMonitorRaisesOnNoDevice:
+    def test_start_raises_when_detect_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """TouchEventMonitor.start() with no node and None detection raises TouchDeviceNotFoundError."""
+        from gameplay_recorder.capture.event_monitor import TouchDeviceNotFoundError
+
+        monkeypatch.setattr(
+            "gameplay_recorder.capture.event_monitor.detect_touch_device",
+            lambda serial: None,
+        )
+        stop_event = threading.Event()
+        adb = MagicMock(spec=AdbConnection)
+        adb._serial = "17d4994b"
+        monitor = TouchEventMonitor(adb=adb, stop_event=stop_event)
+        with pytest.raises(TouchDeviceNotFoundError):
+            monitor.start()  # no node= provided → triggers auto-detect → None → raises
