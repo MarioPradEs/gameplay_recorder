@@ -51,9 +51,11 @@ class TouchDeviceNotFoundError(RuntimeError):
 
 # ─── getevent line regex ──────────────────────────────────────────────────────
 
-# Matches: "[<ts>] <dev>: EV_TYPE  EV_CODE  <hex_value>"
+# Matches: "[<ts>] [<dev>: ] EV_TYPE  EV_CODE  <hex_value>"
+# The <device>: prefix is optional: getevent omits it when streaming a single
+# device (getevent -l -t <node>) but includes it when streaming multiple devices.
 _LINE_RE = re.compile(
-    r"\[\s*(?P<ts>[0-9.]+)\]\s+\S+:\s+(?P<ev_type>\S+)\s+(?P<ev_code>\S+)\s+(?P<value>[0-9a-fA-F]+)"
+    r"\[\s*(?P<ts>[0-9.]+)\]\s+(?:\S+:\s+)?(?P<ev_type>\S+)\s+(?P<ev_code>\S+)\s+(?P<value>[0-9a-fA-F]+)"
 )
 
 # Device node detection — matches the device path before the colon
