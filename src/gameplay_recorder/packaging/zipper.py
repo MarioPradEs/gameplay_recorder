@@ -125,6 +125,8 @@ def assemble_zip(
     session_dir: Path,
     meta: SessionMeta,
     output_dir: Path,
+    *,
+    escape_hatch_active: bool = False,
 ) -> Path:
     """Package a session directory into a named ZIP file.
 
@@ -141,10 +143,16 @@ def assemble_zip(
       4. Assemble ZIP: session_meta.json, gameplay.mp4, events.jsonl, screenshots/*.
       5. Exclude perception.jsonl and any unlisted file.
 
+    Phase 4: escape_hatch_active controls the touch_capture field in session_meta.json:
+      - True  → touch_capture: "disabled_by_user"
+      - False → touch_capture: "enabled"
+
     Args:
-        session_dir: Directory containing the session files produced by capture workers.
-        meta:        Completed session metadata (6 fields).
-        output_dir:  Directory where the ZIP will be saved.
+        session_dir:         Directory containing session files produced by capture workers.
+        meta:                Completed session metadata (6 fields).
+        output_dir:          Directory where the ZIP will be saved.
+        escape_hatch_active: Whether the user started recording with no touch device
+                             (escape-hatch checkbox was checked).
 
     Returns:
         Path to the written ZIP file.
@@ -213,7 +221,9 @@ def assemble_zip(
     zip_path = _resolve_output_path(output_dir, base_name)
 
     # 3. Write session_meta.json into the session_dir so we can include it in the ZIP
-    meta_file = write_meta(meta, session_dir)
+    # Phase 4: include touch_capture field to record whether escape-hatch was used.
+    touch_capture_value = "disabled_by_user" if escape_hatch_active else "enabled"
+    meta_file = write_meta(meta, session_dir, extra={"touch_capture": touch_capture_value})
 
     # 4. Assemble ZIP
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:

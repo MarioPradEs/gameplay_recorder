@@ -139,6 +139,9 @@ class MainWindow(QMainWindow):
         self._start_time: float | None = None
         self._stop_event: threading.Event | None = None
 
+        # Phase 4: escape-hatch state — False when touch monitor is active.
+        self._touch_capture_active: bool = True
+
         # Elapsed timer — ticks every second during RECORDING.
         self._elapsed_timer = QTimer(self)
         self._elapsed_timer.setInterval(1000)
@@ -262,20 +265,34 @@ class MainWindow(QMainWindow):
         # Wire error signal before starting.
         self._video_worker.recording_error.connect(self._on_recording_error)
 
-        # Create and start TouchEventMonitor (producer of touch events).
-        self._stop_event = threading.Event()
-        self._event_monitor = TouchEventMonitor(
-            adb=self._adb_conn,
-            stop_event=self._stop_event,
-        )
-        self._event_monitor.start()
+        # Wire validation_warning signal (Phase 4 — Batch 2 exposed this signal).
+        self._video_worker.validation_warning.connect(self._on_validation_warning)
 
-        # Create and start EventPersister (consumer that writes events.jsonl).
-        self._event_persister = EventPersister(
-            monitor=self._event_monitor,
-            output_path=events_jsonl,
-        )
-        self._event_persister.start()
+        # Phase 4: conditional spawn based on escape-hatch state.
+        escape_hatch = self.idle_screen.escape_hatch_active
+        self._touch_capture_active = not escape_hatch
+
+        if not escape_hatch:
+            # Normal flow: create and start TouchEventMonitor (producer of touch events).
+            self._stop_event = threading.Event()
+            self._event_monitor = TouchEventMonitor(
+                adb=self._adb_conn,
+                stop_event=self._stop_event,
+            )
+            self._event_monitor.start()
+
+            # Create and start EventPersister (consumer that writes events.jsonl).
+            self._event_persister = EventPersister(
+                monitor=self._event_monitor,
+                output_path=events_jsonl,
+            )
+            self._event_persister.start()
+        else:
+            # Escape-hatch: no touch monitoring. stop_event still needed for
+            # stop_recording_session (it checks if it's not None before setting).
+            self._stop_event = threading.Event()
+            self._event_monitor = None
+            self._event_persister = None
 
         self._video_worker.start()
         self._screenshot_worker.start()
@@ -360,6 +377,20 @@ class MainWindow(QMainWindow):
         """
         self._done_screen.set_zip_path(path)
         self.packaging_finished.emit()
+
+    def _on_validation_warning(self, message: str) -> None:
+        """Surface a validation warning from ScrcpyRecorder to the UI.
+
+        Called when the mp4 moov atom check fails after recording ends.
+        Uses the status bar as the simplest non-modal visible surface.
+
+        Args:
+            message: Human-readable warning text from ScrcpyRecorder.
+
+        Phase 4: wires ScrcpyRecorder.validation_warning (Batch 2) to UI.
+        """
+        logger.warning("Validation warning: %s", message)
+        self.statusBar().showMessage(message)
 
     def _on_recording_error(self, message: str) -> None:
         """Display a recording error banner on the RecordingScreen.

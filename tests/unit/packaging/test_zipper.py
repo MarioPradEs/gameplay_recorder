@@ -152,8 +152,13 @@ class TestZipContents:
         assert "screenshots/0000.png" in names
         assert "screenshots/0001.png" in names
 
-    def test_zip_session_meta_is_valid_json_with_6_keys(self, tmp_path: Path) -> None:
-        """session_meta.json inside the ZIP has exactly 6 keys, correct values."""
+    def test_zip_session_meta_is_valid_json_with_required_keys(self, tmp_path: Path) -> None:
+        """session_meta.json inside the ZIP has the 6 canonical keys plus touch_capture.
+
+        Phase 4: touch_capture field added — total is 7 keys (6 canonical + touch_capture).
+        The 6 canonical fields are always present; touch_capture is always 'enabled'
+        in normal (non-escape-hatch) recordings.
+        """
         import json
 
         from gameplay_recorder.packaging.zipper import assemble_zip
@@ -167,10 +172,12 @@ class TestZipContents:
         with zipfile.ZipFile(result) as zf:
             content = json.loads(zf.read("session_meta.json").decode("utf-8"))
 
-        assert len(content) == 6
+        # 6 canonical + touch_capture = 7
+        assert len(content) == 7
         assert content["game_id"] == "zombie_gore"
         assert content["schema_version"] == "1"
         assert isinstance(content["schema_version"], str)
+        assert content["touch_capture"] == "enabled"
 
 
 class TestZipFilenameCollision:

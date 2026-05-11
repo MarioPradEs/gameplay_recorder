@@ -14,7 +14,9 @@ error_banner for packaging errors.
 
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFormLayout,
     QLabel,
@@ -33,6 +35,26 @@ class _BannerLabel(QLabel):
     unit tests).  This subclass overrides ``isVisible()`` to return the value last
     passed to ``setVisible()``, so that tests can assert banner visibility without
     needing to show the parent window.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._explicitly_visible: bool = False
+
+    def setVisible(self, visible: bool) -> None:  # type: ignore[override]
+        self._explicitly_visible = visible
+        super().setVisible(visible)
+
+    def isVisible(self) -> bool:  # type: ignore[override]
+        return self._explicitly_visible
+
+
+class _TrackableCheckBox(QCheckBox):
+    """QCheckBox that tracks its own explicit visibility independently of the parent chain.
+
+    Same rationale as _BannerLabel: Qt's ``isVisible()`` propagates through the parent
+    chain, so unit tests that never ``show()`` the window always see False.  This subclass
+    overrides ``isVisible()`` to reflect the last explicit ``setVisible()`` call.
     """
 
     def __init__(self, *args, **kwargs) -> None:
@@ -86,6 +108,7 @@ class IdleScreen(QWidget):
 
         # ── Internal state ──────────────────────────────────────────────────
         self._current_serial: str | None = None
+        self._touch_device: str | None = None
 
         # ── Banners (outside form layout, span full width) ──────────────────
         self.update_banner = _BannerLabel("", self)
@@ -94,6 +117,21 @@ class IdleScreen(QWidget):
         self.error_banner = _BannerLabel("", self)
         self.error_banner.setVisible(False)
         self.error_banner.setStyleSheet("color: #c0392b; background: #fdecea; padding: 4px;")
+
+        # ── Escape-hatch widgets (shown only when no touch device) ──────────
+        self.no_touch_warning_label = _BannerLabel(
+            "⚠ No touch device detected — touch events will not be recorded.", self
+        )
+        self.no_touch_warning_label.setVisible(False)
+        self.no_touch_warning_label.setStyleSheet(
+            "color: #856404; background: #fff3cd; padding: 4px;"
+        )
+
+        self.escape_hatch_checkbox = _TrackableCheckBox(
+            "Continue anyway (no touch events will be recorded)", self
+        )
+        self.escape_hatch_checkbox.setVisible(False)
+        self.escape_hatch_checkbox.stateChanged.connect(self._validate_form)
 
         # ── Form widgets ────────────────────────────────────────────────────
         self.game_dropdown = QComboBox(self)
@@ -132,6 +170,8 @@ class IdleScreen(QWidget):
         root = QVBoxLayout(self)
         root.addWidget(self.update_banner)
         root.addWidget(self.error_banner)
+        root.addWidget(self.no_touch_warning_label)
+        root.addWidget(self.escape_hatch_checkbox)
         root.addLayout(form)
         self.setLayout(root)
 
@@ -175,11 +215,19 @@ class IdleScreen(QWidget):
 
         Required: a device serial is set, version_field is non-empty, and
         player_name_field is non-empty.
+        Touch device gating (Phase 4):
+          - If _touch_device is set (not None): normal — no extra requirement.
+          - If _touch_device is None: Record only enabled when escape_hatch_active.
         """
+        touch_ok = (
+            self._touch_device is not None
+            or self.escape_hatch_checkbox.checkState() == Qt.CheckState.Checked
+        )
         ready = (
             self._current_serial is not None
             and bool(self.version_field.text().strip())
             and bool(self.player_name_field.text().strip())
+            and touch_ok
         )
         self.record_button.setEnabled(ready)
 
@@ -191,6 +239,35 @@ class IdleScreen(QWidget):
         """
         self.error_banner.setText(message)
         self.error_banner.setVisible(True)
+
+    def set_touch_device(self, device: str | None) -> None:
+        """Update the known touch device path and re-evaluate escape-hatch widgets.
+
+        Args:
+            device: A non-None string means a touch device is available.
+                ``None`` means no touch device was detected — shows warning
+                and escape-hatch checkbox; blocks Record until user opts in.
+        """
+        self._touch_device = device
+        has_device = device is not None
+        # Show escape-hatch UI only when no touch device
+        self.no_touch_warning_label.setVisible(not has_device)
+        self.escape_hatch_checkbox.setVisible(not has_device)
+        # When a device appears, uncheck the checkbox so state resets cleanly
+        if has_device:
+            self.escape_hatch_checkbox.setCheckState(Qt.CheckState.Unchecked)
+        self._validate_form()
+
+    @property
+    def escape_hatch_active(self) -> bool:
+        """Return True if the escape-hatch checkbox is checked.
+
+        MainWindow reads this before deciding whether to spawn TouchEventMonitor.
+        Only meaningful when _touch_device is None; always False when device present.
+        """
+        if self._touch_device is not None:
+            return False
+        return self.escape_hatch_checkbox.checkState() == Qt.CheckState.Checked
 
     def set_update_available(self, version: str | None) -> None:
         """Show or hide the update banner.

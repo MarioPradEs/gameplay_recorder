@@ -47,7 +47,12 @@ def serialize_meta(meta: SessionMeta) -> dict[str, object]:
     return result
 
 
-def write_meta(meta: SessionMeta, dest_dir: Path) -> Path:
+def write_meta(
+    meta: SessionMeta,
+    dest_dir: Path,
+    *,
+    extra: dict[str, object] | None = None,
+) -> Path:
     """Write session_meta.json into dest_dir.
 
     Creates dest_dir if it does not exist.
@@ -56,6 +61,8 @@ def write_meta(meta: SessionMeta, dest_dir: Path) -> Path:
     Args:
         meta:     The session metadata to persist.
         dest_dir: Directory where session_meta.json will be written.
+        extra:    Optional additional fields to merge into the JSON output.
+                  These are appended AFTER the 6 canonical fields.
 
     Returns:
         Path to the written file.
@@ -65,5 +72,7 @@ def write_meta(meta: SessionMeta, dest_dir: Path) -> Path:
 
     json_path = dest_dir / _FILENAME
     payload = serialize_meta(meta)
+    if extra:
+        payload.update(extra)
     json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     return json_path
