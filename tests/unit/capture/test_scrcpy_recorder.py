@@ -191,8 +191,13 @@ def test_run_emits_recording_started_after_proc_starts():
 
     recorder.recording_started.connect(_on_started, Qt.DirectConnection)
 
+    def _fake_os_kill(pid, sig):
+        fake_proc._terminated = True
+        fake_proc.returncode = 0
+
     with (
         patch("gameplay_recorder.capture.scrcpy_recorder._spawn_scrcpy", return_value=fake_proc),
+        patch("gameplay_recorder.capture.scrcpy_recorder.os.kill", side_effect=_fake_os_kill),
         patch("pathlib.Path.exists", return_value=True),
         patch("pathlib.Path.stat") as mock_stat,
     ):
@@ -206,20 +211,29 @@ def test_run_emits_recording_started_after_proc_starts():
 
 
 def test_run_terminates_on_interruption_within_2s():
-    """run() calls terminate() within 2s of requestInterruption().
+    """run() calls _graceful_stop() within 2s of requestInterruption().
 
     Spec: Scenario 'Graceful stop preserves video'.
-    FakeProcess pattern: terminate() sets _terminated, wait() returns.
+    FakeProcess pattern: simulate the stop signal being received by the fake proc
+    so that _graceful_stop completes and the recorder exits cleanly.
+    os.kill is patched to avoid real Windows signal delivery to a fake PID.
     """
     import time
 
     from gameplay_recorder.capture.scrcpy_recorder import ScrcpyRecorder
 
     fake_proc = _FakeProcess()
+
+    def _fake_os_kill(pid, sig):
+        # Simulate CTRL_BREAK_EVENT being received — fake proc stops
+        fake_proc._terminated = True
+        fake_proc.returncode = 0
+
     recorder = ScrcpyRecorder(serial="17d4994b", output_path=Path("/tmp/gameplay.mp4"))
 
     with (
         patch("gameplay_recorder.capture.scrcpy_recorder._spawn_scrcpy", return_value=fake_proc),
+        patch("gameplay_recorder.capture.scrcpy_recorder.os.kill", side_effect=_fake_os_kill),
         patch("pathlib.Path.exists", return_value=True),
         patch("pathlib.Path.stat") as mock_stat,
     ):
@@ -237,7 +251,7 @@ def test_run_terminates_on_interruption_within_2s():
         recorder.wait(3000)
 
     assert fake_proc._terminated, (
-        "proc.terminate() must be called within 2s of requestInterruption()"
+        "_graceful_stop() must be called within 2s of requestInterruption()"
     )
 
 
@@ -274,6 +288,7 @@ def test_run_escalates_to_kill_after_terminate_timeout():
 
     with (
         patch("gameplay_recorder.capture.scrcpy_recorder._spawn_scrcpy", return_value=stubborn),
+        patch("gameplay_recorder.capture.scrcpy_recorder.os.kill"),  # prevent real signal delivery
         patch("pathlib.Path.exists", return_value=True),
         patch("pathlib.Path.stat") as mock_stat,
     ):
@@ -311,8 +326,13 @@ def test_run_emits_recording_error_when_output_file_missing():
     errors = []
     recorder.recording_error.connect(errors.append, Qt.DirectConnection)
 
+    def _fake_os_kill(pid, sig):
+        fake_proc._terminated = True
+        fake_proc.returncode = 0
+
     with (
         patch("gameplay_recorder.capture.scrcpy_recorder._spawn_scrcpy", return_value=fake_proc),
+        patch("gameplay_recorder.capture.scrcpy_recorder.os.kill", side_effect=_fake_os_kill),
         patch("pathlib.Path.exists", return_value=False),
     ):
         recorder.start()
@@ -341,8 +361,13 @@ def test_run_emits_recording_error_when_output_file_is_empty():
     errors = []
     recorder.recording_error.connect(errors.append, Qt.DirectConnection)
 
+    def _fake_os_kill(pid, sig):
+        fake_proc._terminated = True
+        fake_proc.returncode = 0
+
     with (
         patch("gameplay_recorder.capture.scrcpy_recorder._spawn_scrcpy", return_value=fake_proc),
+        patch("gameplay_recorder.capture.scrcpy_recorder.os.kill", side_effect=_fake_os_kill),
         patch("pathlib.Path.exists", return_value=True),
         patch("pathlib.Path.stat") as mock_stat,
     ):
@@ -374,8 +399,13 @@ def test_run_emits_recording_finished_with_path_on_success():
     finished_paths = []
     recorder.recording_finished.connect(finished_paths.append, Qt.DirectConnection)
 
+    def _fake_os_kill(pid, sig):
+        fake_proc._terminated = True
+        fake_proc.returncode = 0
+
     with (
         patch("gameplay_recorder.capture.scrcpy_recorder._spawn_scrcpy", return_value=fake_proc),
+        patch("gameplay_recorder.capture.scrcpy_recorder.os.kill", side_effect=_fake_os_kill),
         patch("pathlib.Path.exists", return_value=True),
         patch("pathlib.Path.stat") as mock_stat,
     ):
@@ -401,8 +431,13 @@ def test_run_logs_lifecycle_at_info_level():
     fake_proc = _FakeProcess()
     recorder = ScrcpyRecorder(serial="17d4994b", output_path=Path("/tmp/gameplay.mp4"))
 
+    def _fake_os_kill(pid, sig):
+        fake_proc._terminated = True
+        fake_proc.returncode = 0
+
     with (
         patch("gameplay_recorder.capture.scrcpy_recorder._spawn_scrcpy", return_value=fake_proc),
+        patch("gameplay_recorder.capture.scrcpy_recorder.os.kill", side_effect=_fake_os_kill),
         patch("pathlib.Path.exists", return_value=True),
         patch("pathlib.Path.stat") as mock_stat,
     ):

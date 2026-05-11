@@ -10,7 +10,9 @@ Signals: recording_started(), recording_finished(object), recording_error(str)
 from __future__ import annotations
 
 import logging
+import os
 import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -80,13 +82,17 @@ def _spawn_scrcpy(
         str(output_path),
         "--no-playback",
         "--no-audio",
+        "--time-limit=7200",
     ]
     logger.info(
         "ScrcpyRecorder: spawning scrcpy serial=%s output=%s",
         serial,
         output_path,
     )
-    return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    kwargs: dict = {"stdout": subprocess.DEVNULL, "stderr": subprocess.PIPE}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    return subprocess.Popen(cmd, **kwargs)
 
 
 def check_host_free_space(output_dir: Path, min_gb: float = 1) -> str | None:
@@ -151,6 +157,35 @@ class ScrcpyRecorder(QThread):
         super().__init__(parent)
         self._serial = serial
         self._output_path = output_path
+        self._aborted: bool = False
+
+    # ── Graceful shutdown ────────────────────────────────────────────────────
+
+    def _graceful_stop(self, proc: subprocess.Popen) -> None:
+        """Send the platform-appropriate stop signal, then wait for graceful exit.
+
+        On Windows: CTRL_BREAK_EVENT (lets scrcpy flush the mp4 muxer / moov atom).
+        On macOS/Linux: SIGTERM via proc.terminate().
+
+        After sending the signal, waits up to _TERMINATE_TIMEOUT_S seconds.
+        If the process does not exit in time: hard-kills and sets _aborted=True
+        to signal downstream validation that the recording may be corrupt.
+        """
+        if sys.platform == "win32":
+            os.kill(proc.pid, signal.CTRL_BREAK_EVENT)
+        else:
+            proc.terminate()
+
+        try:
+            proc.wait(timeout=_TERMINATE_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "ScrcpyRecorder: scrcpy did not exit within %ds"
+                " — force-killed; mp4 may be incomplete",
+                _TERMINATE_TIMEOUT_S,
+            )
+            proc.kill()
+            self._aborted = True
 
     # ── QThread entry point ──────────────────────────────────────────────────
 
@@ -171,17 +206,7 @@ class ScrcpyRecorder(QThread):
             while proc.poll() is None:
                 if self.isInterruptionRequested():
                     logger.info("ScrcpyRecorder: interruption requested — terminating scrcpy")
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=_TERMINATE_TIMEOUT_S)
-                    except subprocess.TimeoutExpired:
-                        logger.warning(
-                            "ScrcpyRecorder: scrcpy did not terminate within %ds"
-                            " — force-killed; mp4 may be incomplete",
-                            _TERMINATE_TIMEOUT_S,
-                        )
-                        proc.kill()
-                        proc.wait()
+                    self._graceful_stop(proc)
                     break
                 try:
                     proc.wait(timeout=1)
