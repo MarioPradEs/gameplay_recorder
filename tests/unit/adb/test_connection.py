@@ -823,7 +823,12 @@ class TestShellStreamSubprocess:
 
         assert "cmd_args" in captured, "subprocess.Popen must be called"
         cmd = captured["cmd_args"]
-        assert cmd[0] == "adb", f"first arg must be 'adb', got {cmd}"
+        # Phase 4.6: cmd[0] is now the resolved adb path (not the literal "adb").
+        # Accept both the literal "adb" (if adb_path fell back to it) and any
+        # path that ends with "adb" or "adb.exe".
+        assert str(cmd[0]).endswith("adb") or str(cmd[0]).endswith("adb.exe"), (
+            f"first arg must be 'adb' or end with 'adb'/'adb.exe', got {cmd}"
+        )
         assert "-s" in cmd, "must include -s flag"
         assert "TESTSERIAL" in cmd, "must include the serial"
         assert "shell" in cmd, "must include 'shell' subcommand"
