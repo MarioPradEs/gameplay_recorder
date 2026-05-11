@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 import queue
 import re
+import subprocess
 import threading
 from typing import TYPE_CHECKING
 
@@ -39,6 +40,13 @@ if TYPE_CHECKING:
     from gameplay_recorder.adb.connection import AdbConnection
 
 logger = logging.getLogger(__name__)
+
+# ─── Domain exceptions ────────────────────────────────────────────────────────
+
+
+class TouchDeviceNotFoundError(RuntimeError):
+    """Raised when no touchscreen input device can be detected on the target."""
+
 
 # ─── getevent line regex ──────────────────────────────────────────────────────
 
@@ -52,7 +60,111 @@ _DEVICE_BLOCK_RE = re.compile(r"add device \d+:\s+(?P<node>/dev/input/\S+)")
 
 _TRACKING_ID_INVALID = 0xFFFFFFFF  # getevent value for contact-lifted
 
-_FALLBACK_NODE = "/dev/input/event3"
+# Scoring weights for touch device detection
+_SCORE_ABS_MT_POSITION_X = 10
+_SCORE_ABS_MT_POSITION_Y = 10
+_SCORE_ABS_MT_TRACKING_ID = 5
+_SCORE_INPUT_PROP_DIRECT = 5
+_SCORE_TOUCHSCREEN_NAME = 2
+_TOUCHSCREEN_NAME_KEYWORDS = ("touch", "panel", "screen")
+
+# ─── Module-level touch device detection ─────────────────────────────────────
+
+
+def detect_touch_device(serial: str) -> str | None:
+    """Auto-detect the touchscreen /dev/input/eventN node on a device.
+
+    Runs ``adb -s <serial> shell getevent -lp`` (with ``-l`` for human-readable
+    labels) and applies a scoring heuristic to find the best touchscreen device.
+
+    Scoring:
+        +10 for ABS_MT_POSITION_X
+        +10 for ABS_MT_POSITION_Y
+        +5  for ABS_MT_TRACKING_ID
+        +5  for INPUT_PROP_DIRECT
+        +2  if device name contains "touch", "panel", or "screen" (case-insensitive)
+
+    Threshold: device MUST have BOTH ABS_MT_POSITION_X and ABS_MT_POSITION_Y
+    to be a candidate. Devices missing either axis are excluded entirely.
+
+    Args:
+        serial: ADB device serial (e.g. ``"17d4994b"``).
+
+    Returns:
+        Device node path (e.g. ``"/dev/input/event8"``) for the highest-scoring
+        candidate, or ``None`` if no device passes the threshold.
+    """
+    try:
+        result = subprocess.run(
+            ["adb", "-s", serial, "shell", "getevent", "-lp"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        output = result.stdout
+    except Exception:
+        logger.warning("detect_touch_device: adb getevent -lp failed for serial=%s", serial)
+        return None
+
+    # Parse output into device blocks.
+    # Each block starts with "add device N: /dev/input/eventX"
+    # and contains name, events, and input props sections.
+    devices: list[dict] = []  # [{path, name, events_set}]
+    current: dict | None = None
+
+    for line in output.splitlines():
+        m = _DEVICE_BLOCK_RE.search(line)
+        if m:
+            # Flush previous device block
+            if current is not None:
+                devices.append(current)
+            current = {"path": m.group("node"), "name": "", "events_set": set()}
+            continue
+
+        if current is None:
+            continue
+
+        # Capture device name
+        name_match = re.search(r'name:\s+"([^"]*)"', line)
+        if name_match:
+            current["name"] = name_match.group(1)
+            continue
+
+        # Collect all uppercase identifiers (capability labels) from this line.
+        # getevent -lp outputs labels like ABS_MT_POSITION_X, INPUT_PROP_DIRECT, etc.
+        labels = re.findall(r"\b([A-Z][A-Z0-9_]+)\b", line)
+        current["events_set"].update(labels)
+
+    # Don't forget the last block
+    if current is not None:
+        devices.append(current)
+
+    # Score each device — threshold requires both X and Y axes
+    best_path: str | None = None
+    best_score: int = -1
+
+    for dev in devices:
+        events_set = dev["events_set"]
+        if "ABS_MT_POSITION_X" not in events_set or "ABS_MT_POSITION_Y" not in events_set:
+            continue  # does not pass threshold
+
+        score = _SCORE_ABS_MT_POSITION_X + _SCORE_ABS_MT_POSITION_Y
+        if "ABS_MT_TRACKING_ID" in events_set:
+            score += _SCORE_ABS_MT_TRACKING_ID
+        if "INPUT_PROP_DIRECT" in events_set:
+            score += _SCORE_INPUT_PROP_DIRECT
+        name_lower = dev["name"].lower()
+        if any(kw in name_lower for kw in _TOUCHSCREEN_NAME_KEYWORDS):
+            score += _SCORE_TOUCHSCREEN_NAME
+
+        if score > best_score:
+            best_score = score
+            best_path = dev["path"]
+
+    if best_path is None:
+        logger.warning("detect_touch_device: no MT-capable touchscreen found on serial=%s", serial)
+    return best_path
+
 
 # Type name mapping: internal action → spec-compliant type string
 _ACTION_MAP = {
@@ -94,9 +206,19 @@ class TouchEventMonitor:
     # ─── Public API ───────────────────────────────────────────────────────────
 
     def start(self, node: str | None = None) -> None:
-        """Detect the touchscreen node (if not provided) and launch the daemon thread."""
+        """Detect the touchscreen node (if not provided) and launch the daemon thread.
+
+        Raises:
+            TouchDeviceNotFoundError: If no node is provided and auto-detection
+                finds no touchscreen device on the connected ADB device.
+        """
         if node is None:
-            node = self.detect_touch_device()
+            serial = getattr(self._adb, "_serial", None) or ""
+            node = detect_touch_device(serial)
+            if node is None:
+                raise TouchDeviceNotFoundError(
+                    f"No touchscreen detected on device {serial!r}. Cannot start event capture."
+                )
         self._thread = threading.Thread(
             target=self._run,
             args=(node,),
@@ -121,33 +243,18 @@ class TouchEventMonitor:
         if self._thread is not None:
             self._thread.join(timeout=5.0)
 
-    def detect_touch_device(self) -> str:
+    def detect_touch_device(self) -> str | None:
         """Auto-detect the touchscreen /dev/input/eventN node.
 
-        Runs ``getevent -p``, searches for the device block that reports
-        ABS_MT_POSITION_X, and returns that device path.
+        Delegates to the module-level :func:`detect_touch_device` function
+        using the serial from the underlying ADB connection.
 
         Returns:
-            Device node string (e.g. ``"/dev/input/event3"``).
-            Falls back to ``_FALLBACK_NODE`` if not found.
+            Device node string (e.g. ``"/dev/input/event8"``), or ``None``
+            if no touchscreen device is found.
         """
-        try:
-            output = self._adb.shell("getevent -p")
-        except Exception:
-            logger.warning("detect_touch_device: getevent -p failed, using fallback")
-            return _FALLBACK_NODE
-
-        current_node: str | None = None
-        for line in output.splitlines():
-            m = _DEVICE_BLOCK_RE.search(line)
-            if m:
-                current_node = m.group("node")
-                continue
-            if "ABS_MT_POSITION_X" in line and current_node is not None:
-                return current_node
-
-        logger.warning("detect_touch_device: no ABS_MT_POSITION_X found, using fallback")
-        return _FALLBACK_NODE
+        serial = getattr(self._adb, "_serial", None) or ""
+        return detect_touch_device(serial)
 
     # ─── Internal thread ──────────────────────────────────────────────────────
 
