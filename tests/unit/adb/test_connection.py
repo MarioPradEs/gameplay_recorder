@@ -14,6 +14,7 @@ Tests cover:
 from __future__ import annotations
 
 import inspect
+import subprocess
 from unittest.mock import MagicMock, patch
 
 import adbutils
@@ -724,3 +725,138 @@ class TestScreencapTimeout:
         )
         default = sig.parameters["timeout"].default
         assert default == 30.0, f"screencap() timeout default must be 30.0, got {default!r}"
+
+
+# ─── Phase 4.5: shell_stream must use subprocess.Popen ────────────────────────
+
+
+def _make_stream_conn(serial: str = "TESTSERIAL") -> AdbConnection:
+    """Return an AdbConnection with _serial set and a dummy _adb_device.
+
+    _adb_device is a MagicMock so _ensure_device() passes.  The underlying
+    socket mock returns b"" immediately (EOF) so the old recv-loop exits
+    quickly if subprocess.Popen is NOT patched (RED phase).  Once the GREEN
+    implementation uses subprocess.Popen instead of the socket, the _adb_device
+    mock is never consulted by shell_stream at all.
+    """
+    fake_socket = MagicMock()
+    fake_socket.recv.return_value = b""  # immediate EOF — old loop exits fast
+
+    fake_adb_conn = MagicMock()
+    fake_adb_conn.conn = fake_socket
+
+    mock_device = MagicMock()
+    mock_device.shell.return_value = fake_adb_conn
+
+    conn = AdbConnection(serial=serial)
+    conn._adb_device = mock_device
+    return conn
+
+
+class TestShellStreamSubprocess:
+    """Phase 4.5 — shell_stream must use subprocess.Popen(["adb", "-s", serial, "shell", cmd]).
+
+    Root cause: the old adbutils recv(4096) path blocked indefinitely on Windows
+    because adbutils sets timeout=None which is falsy, so settimeout() is never
+    called on the underlying raw socket (WinError 10053 on stream teardown).
+
+    Fix (Option A): replace shell_stream internals with subprocess.Popen and
+    stdout=PIPE — same pattern already used in detect_touch_device.
+    Public API of shell_stream stays identical: (cmd: str) -> Iterator[bytes].
+
+    Patching: we patch "subprocess.Popen" at stdlib level.  Once the production
+    code imports subprocess and calls subprocess.Popen, the patch intercepts it
+    regardless of whether subprocess was already in connection.py before the fix.
+    """
+
+    def test_shell_stream_invokes_subprocess_popen_with_adb(self) -> None:
+        """shell_stream must use subprocess.Popen([adb, -s, serial, shell, cmd])
+        instead of the adbutils socket stream — fixes WinError 10053 blocking
+        recv() on Windows with adb daemon stream-mode connections.
+        """
+        captured: dict = {}
+
+        def fake_popen(cmd_args, stdout=None, stderr=None, **kwargs):
+            captured["cmd_args"] = cmd_args
+            captured["stdout"] = stdout
+            mock_proc = MagicMock()
+            mock_proc.stdout = iter([])
+            mock_proc.terminate = MagicMock()
+            mock_proc.wait = MagicMock(return_value=0)
+            return mock_proc
+
+        with patch("subprocess.Popen", fake_popen):
+            conn = _make_stream_conn("TESTSERIAL")
+            list(conn.shell_stream("getevent -l -t /dev/input/event8"))
+
+        assert "cmd_args" in captured, "subprocess.Popen must be called"
+        cmd = captured["cmd_args"]
+        assert cmd[0] == "adb", f"first arg must be 'adb', got {cmd}"
+        assert "-s" in cmd, "must include -s flag"
+        assert "TESTSERIAL" in cmd, "must include the serial"
+        assert "shell" in cmd, "must include 'shell' subcommand"
+        assert any("getevent" in str(a) for a in cmd), f"must pass the command, got {cmd}"
+        assert captured["stdout"] is not None, "stdout must be PIPE for streaming"
+
+    def test_shell_stream_yields_lines_from_stdout(self) -> None:
+        """shell_stream must yield each line from the subprocess stdout."""
+        fake_lines = [
+            b"[   123.456] EV_ABS       ABS_MT_TRACKING_ID   00000123\n",
+            b"[   123.457] EV_ABS       ABS_MT_POSITION_X    000003a4\n",
+            b"[   123.458] EV_ABS       ABS_MT_POSITION_Y    00000287\n",
+            b"[   123.459] EV_SYN       SYN_REPORT           00000000\n",
+        ]
+
+        def fake_popen(cmd_args, stdout=None, stderr=None, **kwargs):
+            mock_proc = MagicMock()
+            mock_proc.stdout = iter(fake_lines)
+            mock_proc.terminate = MagicMock()
+            mock_proc.wait = MagicMock(return_value=0)
+            return mock_proc
+
+        with patch("subprocess.Popen", fake_popen):
+            conn = _make_stream_conn()
+            received = list(conn.shell_stream("getevent -l -t /dev/input/event8"))
+
+        assert len(received) == 4, f"Expected 4 lines, got {len(received)}: {received}"
+        assert b"ABS_MT_POSITION_X" in received[1]
+
+    def test_shell_stream_terminates_subprocess_on_completion(self) -> None:
+        """On normal iteration completion, the subprocess must be terminated cleanly."""
+        fake_lines = [b"line1\n", b"line2\n"]
+        proc_handle: dict = {}
+
+        def fake_popen(cmd_args, stdout=None, stderr=None, **kwargs):
+            mock_proc = MagicMock()
+            mock_proc.stdout = iter(fake_lines)
+            mock_proc.terminate = MagicMock()
+            mock_proc.wait = MagicMock(return_value=0)
+            mock_proc.kill = MagicMock()
+            proc_handle["proc"] = mock_proc
+            return mock_proc
+
+        with patch("subprocess.Popen", fake_popen):
+            conn = _make_stream_conn()
+            list(conn.shell_stream("getevent -l -t /dev/input/event8"))
+
+        proc_handle["proc"].terminate.assert_called_once()
+
+    def test_shell_stream_kills_subprocess_when_terminate_times_out(self) -> None:
+        """If the subprocess doesn't exit within wait timeout, kill() must be called."""
+        fake_lines = [b"line1\n"]
+        proc_handle: dict = {}
+
+        def fake_popen(cmd_args, stdout=None, stderr=None, **kwargs):
+            mock_proc = MagicMock()
+            mock_proc.stdout = iter(fake_lines)
+            mock_proc.terminate = MagicMock()
+            mock_proc.wait = MagicMock(side_effect=subprocess.TimeoutExpired(cmd_args, 3.0))
+            mock_proc.kill = MagicMock()
+            proc_handle["proc"] = mock_proc
+            return mock_proc
+
+        with patch("subprocess.Popen", fake_popen):
+            conn = _make_stream_conn()
+            list(conn.shell_stream("getevent -l -t /dev/input/event8"))
+        # Should not raise — and kill() must be called after TimeoutExpired
+        proc_handle["proc"].kill.assert_called_once()
