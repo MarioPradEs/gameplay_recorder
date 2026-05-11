@@ -766,3 +766,127 @@ def test_graceful_stop_no_kill_when_proc_exits_cleanly():
     assert recorder._aborted is False, (
         "_aborted must remain False when proc exits cleanly within grace period"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2.2 — mp4 validation wiring in ScrcpyRecorder.run()
+# ---------------------------------------------------------------------------
+
+
+def test_validation_warning_set_when_mp4_invalid(tmp_path):
+    """ScrcpyRecorder._validation_warning is set when mp4 lacks moov atom.
+
+    Spec: Phase 2 — after run() completes, _validation_warning contains reason
+    string when the output mp4 has no moov atom.
+    """
+    import time
+
+    from PySide6.QtCore import Qt
+
+    from gameplay_recorder.capture.scrcpy_recorder import ScrcpyRecorder
+
+    # Create an mp4 file with NO moov atom (just mdat-like bytes)
+    bad_mp4 = tmp_path / "gameplay.mp4"
+    bad_mp4.write_bytes(b"\x00\x00\x00\x20" + b"ftypisom" + b"\x00" * 100 + b"mdat" + b"\x00" * 200)
+
+    fake_proc = _FakeProcess()
+    recorder = ScrcpyRecorder(serial="abc123", output_path=bad_mp4)
+
+    def _fake_os_kill(pid, sig):
+        fake_proc._terminated = True
+        fake_proc.returncode = 0
+
+    with (
+        patch("gameplay_recorder.capture.scrcpy_recorder._spawn_scrcpy", return_value=fake_proc),
+        patch("gameplay_recorder.capture.scrcpy_recorder.os.kill", side_effect=_fake_os_kill),
+    ):
+        recorder.start()
+        time.sleep(0.15)
+        recorder.requestInterruption()
+        recorder.wait(3000)
+
+    assert recorder._validation_warning is not None, (
+        "_validation_warning must be set when mp4 has no moov atom"
+    )
+    assert "moov" in recorder._validation_warning.lower(), (
+        f"_validation_warning must mention 'moov': {recorder._validation_warning!r}"
+    )
+
+
+def test_validation_warning_none_when_mp4_valid(tmp_path):
+    """ScrcpyRecorder._validation_warning stays None when mp4 has moov atom.
+
+    Spec: Phase 2 — _validation_warning is None when mp4 validation passes.
+    """
+    import time
+
+    from gameplay_recorder.capture.scrcpy_recorder import ScrcpyRecorder
+
+    # Create an mp4 file WITH moov atom
+    good_mp4 = tmp_path / "gameplay.mp4"
+    good_mp4.write_bytes(
+        b"\x00\x00\x00\x20" + b"ftypisom" + b"\x00" * 100 + b"moov" + b"\x00" * 200
+    )
+
+    fake_proc = _FakeProcess()
+    recorder = ScrcpyRecorder(serial="abc123", output_path=good_mp4)
+
+    def _fake_os_kill(pid, sig):
+        fake_proc._terminated = True
+        fake_proc.returncode = 0
+
+    with (
+        patch("gameplay_recorder.capture.scrcpy_recorder._spawn_scrcpy", return_value=fake_proc),
+        patch("gameplay_recorder.capture.scrcpy_recorder.os.kill", side_effect=_fake_os_kill),
+    ):
+        recorder.start()
+        time.sleep(0.15)
+        recorder.requestInterruption()
+        recorder.wait(3000)
+
+    assert recorder._validation_warning is None, (
+        "_validation_warning must remain None when mp4 contains moov atom"
+    )
+
+
+def test_validation_warning_signal_emitted_on_invalid_mp4(tmp_path):
+    """ScrcpyRecorder.validation_warning signal fires when validation fails.
+
+    Spec: Phase 2 — validation_warning(str) signal is emitted with the reason
+    string when the output mp4 has no moov atom.
+    """
+    import time
+
+    from PySide6.QtCore import Qt
+
+    from gameplay_recorder.capture.scrcpy_recorder import ScrcpyRecorder
+
+    # Create an mp4 file with NO moov atom
+    bad_mp4 = tmp_path / "gameplay.mp4"
+    bad_mp4.write_bytes(b"\x00\x00\x00\x20" + b"ftypisom" + b"\x00" * 100 + b"mdat" + b"\x00" * 200)
+
+    fake_proc = _FakeProcess()
+    recorder = ScrcpyRecorder(serial="abc123", output_path=bad_mp4)
+
+    warnings_received = []
+    recorder.validation_warning.connect(warnings_received.append, Qt.DirectConnection)
+
+    def _fake_os_kill(pid, sig):
+        fake_proc._terminated = True
+        fake_proc.returncode = 0
+
+    with (
+        patch("gameplay_recorder.capture.scrcpy_recorder._spawn_scrcpy", return_value=fake_proc),
+        patch("gameplay_recorder.capture.scrcpy_recorder.os.kill", side_effect=_fake_os_kill),
+    ):
+        recorder.start()
+        time.sleep(0.15)
+        recorder.requestInterruption()
+        recorder.wait(3000)
+
+    assert len(warnings_received) >= 1, (
+        "validation_warning signal must be emitted when mp4 has no moov atom"
+    )
+    assert "moov" in warnings_received[0].lower(), (
+        f"Signal payload must mention 'moov': {warnings_received[0]!r}"
+    )
