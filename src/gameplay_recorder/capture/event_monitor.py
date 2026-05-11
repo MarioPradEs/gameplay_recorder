@@ -34,6 +34,7 @@ import subprocess
 import threading
 from typing import TYPE_CHECKING
 
+from gameplay_recorder.adb.paths import adb_path
 from gameplay_recorder.models.touch_event import RawTouchEvent
 
 if TYPE_CHECKING:
@@ -96,7 +97,7 @@ def detect_touch_device(serial: str) -> str | None:
     """
     try:
         result = subprocess.run(
-            ["adb", "-s", serial, "shell", "getevent", "-lp"],
+            [str(adb_path()), "-s", serial, "shell", "getevent", "-lp"],
             capture_output=True,
             text=True,
             timeout=10,

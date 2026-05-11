@@ -15,6 +15,8 @@ import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
 
+from gameplay_recorder.adb.paths import adb_path
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -302,7 +304,7 @@ class AdbConnection:
         self._ensure_device()
         creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
         proc = subprocess.Popen(
-            ["adb", "-s", self._serial, "shell", command],
+            [str(adb_path()), "-s", self._serial, "shell", command],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             creationflags=creationflags,

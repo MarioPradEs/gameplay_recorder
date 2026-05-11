@@ -30,24 +30,25 @@ def test_adb_path_returns_meipass_path_when_frozen(tmp_path):
 
 
 def test_adb_path_returns_repo_relative_path_in_dev(tmp_path, monkeypatch):
-    """When running from source (not frozen), adb_path uses repo-relative path."""
+    """When running from source (not frozen), adb_path uses repo-relative path.
+
+    We mock _bundle_root() to return a fake repo root rather than trying to
+    redirect __file__ (which doesn't survive importlib.reload cleanly).
+    """
     fake_repo = tmp_path / "repo"
     (fake_repo / "resources" / "scrcpy").mkdir(parents=True)
     fake_adb = fake_repo / "resources" / "scrcpy" / "adb.exe"
     fake_adb.write_text("")
 
-    # Simulate the module being inside <fake_repo>/src/gameplay_recorder/adb/paths.py
-    fake_module_file = fake_repo / "src" / "gameplay_recorder" / "adb" / "paths.py"
-    fake_module_file.parent.mkdir(parents=True, exist_ok=True)
-
-    # Ensure 'frozen' is not present
+    # Ensure 'frozen' is not present so _bundle_root falls into the dev branch
     monkeypatch.delattr(sys, "frozen", raising=False)
 
-    import importlib
     import gameplay_recorder.adb.paths as paths_mod
 
-    with patch.object(paths_mod, "__file__", str(fake_module_file)), patch("sys.platform", "win32"):
-        importlib.reload(paths_mod)
+    with (
+        patch.object(paths_mod, "_bundle_root", return_value=fake_repo),
+        patch("sys.platform", "win32"),
+    ):
         result = paths_mod.adb_path()
         assert result == fake_adb
 
