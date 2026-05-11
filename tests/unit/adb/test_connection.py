@@ -206,25 +206,43 @@ def _make_shell_stream_mock(lines: list[bytes]) -> MagicMock:
 
 class TestShellStream:
     def test_shell_stream_yields_lines_until_terminated(self) -> None:
+        """shell_stream yields bytes lines from the subprocess stdout.
+
+        Updated for Phase 4.5: shell_stream now uses subprocess.Popen instead
+        of the adbutils socket recv() path.  We patch subprocess.Popen so the
+        test is hermetic (no real adb process is spawned).
+        """
         fake_lines = [
             b"[ 1234.567] /dev/input/event3: EV_ABS  ABS_MT_TRACKING_ID  00000001\n",
             b"[ 1234.568] /dev/input/event3: EV_SYN  SYN_REPORT           00000000\n",
         ]
 
-        mock_adb_device = _make_shell_stream_mock(fake_lines)
+        def fake_popen(cmd_args, stdout=None, stderr=None, **kwargs):
+            mock_proc = MagicMock()
+            mock_proc.stdout = iter(fake_lines)
+            mock_proc.terminate = MagicMock()
+            mock_proc.wait = MagicMock(return_value=0)
+            return mock_proc
 
-        conn = AdbConnection(serial="test-device")
-        conn._adb_device = mock_adb_device
-        result = list(conn.shell_stream("getevent -lt /dev/input/event3"))
+        with patch("subprocess.Popen", fake_popen):
+            conn = AdbConnection(serial="test-device")
+            conn._adb_device = MagicMock()  # satisfies _ensure_device()
+            result = list(conn.shell_stream("getevent -lt /dev/input/event3"))
 
         assert result == fake_lines
 
     def test_shell_stream_returns_iterator(self) -> None:
-        mock_adb_device = _make_shell_stream_mock([])
+        def fake_popen(cmd_args, stdout=None, stderr=None, **kwargs):
+            mock_proc = MagicMock()
+            mock_proc.stdout = iter([])
+            mock_proc.terminate = MagicMock()
+            mock_proc.wait = MagicMock(return_value=0)
+            return mock_proc
 
-        conn = AdbConnection(serial="test-device")
-        conn._adb_device = mock_adb_device
-        result = conn.shell_stream("getevent -lt")
+        with patch("subprocess.Popen", fake_popen):
+            conn = AdbConnection(serial="test-device")
+            conn._adb_device = MagicMock()
+            result = conn.shell_stream("getevent -lt")
 
         # Must be an iterator/generator
         assert hasattr(result, "__iter__")
@@ -563,69 +581,83 @@ class TestScreencapCorrectApi:
 
 
 class TestShellStreamCorrectApi:
-    """Regression tests for C3: shell_stream called _adb_device.shell_stream(cmd).
+    """Regression tests for C3 (updated for Phase 4.5).
 
-    AdbDevice has NO shell_stream() method in adbutils 0.16.2.
-    Correct API: shell(cmd, stream=True) → returns adbutils.AdbConnection (socket).
+    Original C3 bug: shell_stream called _adb_device.shell_stream(cmd) which
+    does NOT exist on adbutils.AdbDevice 0.16.2 — raised AttributeError.
+    First fix (Phase 3): call _adb_device.shell(cmd, stream=True) instead.
 
-    NOTE: We use plain MagicMock() here (not spec=AdbDevice) because
-    MagicMock(spec=AdbDevice) triggers a hang in pytest-asyncio auto mode
-    due to how pytest-asyncio inspects class attributes for coroutine detection.
-    The assertion that shell_stream() is never called serves as the real guard.
+    Phase 4.5 fix: replace the entire socket-recv path with subprocess.Popen
+    because adbutils stream-mode sets timeout=None → recv() blocks indefinitely
+    on Windows (WinError 10053), yielding 0 touch events over the session.
+
+    These tests are updated to assert the Phase 4.5 contract: shell_stream
+    uses subprocess.Popen and does NOT call _adb_device.shell() at all.
     """
 
     def test_shell_stream_does_not_call_nonexistent_shell_stream_method(self) -> None:
-        """shell_stream() must NOT call _adb_device.shell_stream().
+        """shell_stream() must NOT call _adb_device.shell_stream() or _adb_device.shell().
 
-        Before the fix: code called _adb_device.shell_stream(cmd) — a method that
-        does NOT exist on adbutils.AdbDevice 0.16.2 and raises AttributeError.
-        After the fix: code calls _adb_device.shell(cmd, stream=True).
-
-        We assert that .shell_stream was NEVER called on the device mock.
+        Phase 4.5: shell_stream uses subprocess.Popen directly — the adbutils
+        device mock is never consulted by shell_stream after _ensure_device().
         """
-        # Build a socket that returns data then EOF
-        fake_socket = MagicMock()
-        fake_socket.recv.side_effect = [b"line1\n", b"line2\n", b""]
-        fake_adb_conn = MagicMock()
-        fake_adb_conn.conn = fake_socket
+        fake_lines = [b"line1\n", b"line2\n"]
+
+        def fake_popen(cmd_args, stdout=None, stderr=None, **kwargs):
+            mock_proc = MagicMock()
+            mock_proc.stdout = iter(fake_lines)
+            mock_proc.terminate = MagicMock()
+            mock_proc.wait = MagicMock(return_value=0)
+            return mock_proc
 
         mock_device = MagicMock()
-        mock_device.shell.return_value = fake_adb_conn
 
-        conn = AdbConnection(serial="test-serial")
-        conn._adb_device = mock_device
+        with patch("subprocess.Popen", fake_popen):
+            conn = AdbConnection(serial="test-serial")
+            conn._adb_device = mock_device
+            result = list(conn.shell_stream("getevent -lt /dev/input/event3"))
 
-        result = list(conn.shell_stream("getevent -lt /dev/input/event3"))
         assert result == [b"line1\n", b"line2\n"]
 
-        # shell_stream must NEVER be called on the underlying device (it doesn't exist)
-        assert not mock_device.shell_stream.called, (
-            "AdbDevice has no shell_stream() method — must use shell(cmd, stream=True). "
-            "shell_stream() was called on the device mock!"
+        # Phase 4.5: _adb_device.shell() must NOT be called by shell_stream
+        assert not mock_device.shell.called, (
+            "shell_stream() must NOT call _adb_device.shell() — "
+            "Phase 4.5 uses subprocess.Popen directly to avoid the Windows recv() hang"
         )
-        assert mock_device.shell.call_count == 1, "Must call shell() exactly once"
+        # _adb_device.shell_stream() must also never be called (original C3 guard)
+        assert not mock_device.shell_stream.called, (
+            "AdbDevice has no shell_stream() method — it must never be called"
+        )
 
     def test_shell_stream_calls_shell_with_stream_true(self) -> None:
-        """shell_stream() must call _adb_device.shell(cmd, stream=True)."""
-        # Build a socket that immediately signals EOF
-        fake_socket = MagicMock()
-        fake_socket.recv.side_effect = [b""]
-        fake_adb_conn = MagicMock()
-        fake_adb_conn.conn = fake_socket
+        """Phase 4.5: shell_stream does NOT use _adb_device.shell(stream=True) anymore.
+
+        The subprocess.Popen path replaces the adbutils socket path entirely.
+        This test verifies that the subprocess command includes the correct args
+        (previously it verified adbutils stream=True — now superseded by
+        TestShellStreamSubprocess.test_shell_stream_invokes_subprocess_popen_with_adb).
+        """
+        fake_lines: list[bytes] = []
+
+        def fake_popen(cmd_args, stdout=None, stderr=None, **kwargs):
+            mock_proc = MagicMock()
+            mock_proc.stdout = iter(fake_lines)
+            mock_proc.terminate = MagicMock()
+            mock_proc.wait = MagicMock(return_value=0)
+            return mock_proc
 
         mock_device = MagicMock()
-        mock_device.shell.return_value = fake_adb_conn
 
-        conn = AdbConnection(serial="test-serial")
-        conn._adb_device = mock_device
+        with patch("subprocess.Popen", fake_popen):
+            conn = AdbConnection(serial="test-serial")
+            conn._adb_device = mock_device
+            list(conn.shell_stream("getevent -lt"))
 
-        list(conn.shell_stream("getevent -lt"))
-
-        mock_device.shell.assert_called_once()
-        call_kwargs = mock_device.shell.call_args.kwargs
-        call_args = mock_device.shell.call_args.args
-        stream_passed = call_kwargs.get("stream") or (len(call_args) > 1 and call_args[1] is True)
-        assert stream_passed, "shell_stream() must call AdbDevice.shell(cmd, stream=True)"
+        # Phase 4.5: _adb_device.shell() is NOT called — subprocess handles it
+        assert not mock_device.shell.called, (
+            "Phase 4.5: shell_stream must NOT call _adb_device.shell() — "
+            "subprocess.Popen replaces the adbutils socket path"
+        )
 
 
 # ─── W_NEW2: screencap() socket timeout ──────────────────────────────────────

@@ -10,6 +10,8 @@ Depends only on adbutils. No numpy, PIL, or OpenCV.
 from __future__ import annotations
 
 import logging
+import subprocess
+import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
 
@@ -273,38 +275,51 @@ class AdbConnection:
         :class:`~gameplay_recorder.capture.event_monitor.TouchEventMonitor`
         to consume the ``getevent -lt`` stream.
 
-        Real adbutils 0.16.2 API:
-            AdbDevice.shell(cmd, stream=True) -> adbutils._adb.AdbConnection
-        ``AdbDevice`` has NO ``shell_stream()`` method — that call raises
-        ``AttributeError`` at runtime.
+        Implementation note — WHY subprocess instead of adbutils stream socket:
+
+        The adbutils ``AdbDevice.shell(cmd, stream=True)`` path returns an
+        ``adbutils._adb.AdbConnection`` backed by a raw ``socket.socket``.
+        On Windows that socket has **no timeout** set: adbutils explicitly
+        passes ``timeout=None`` for stream mode (``_device.py:179-180``) and
+        the ``settimeout()`` call is gated on ``if timeout:`` (falsy for None).
+        The resulting ``recv(4096)`` blocks indefinitely — the for-loop in
+        TouchEventMonitor never iterates during the session, and only unblocks
+        when the socket is torn down at stop-time, raising ``ConnectionAbortedError
+        [WinError 10053]``.  Empirical evidence: 26 s of recording with active
+        touch input → 0 events enqueued → events.jsonl 0 bytes.
+
+        Fix: spawn ``adb shell <command>`` as a child process with ``stdout=PIPE``.
+        OS-level pipes deliver data as soon as lines are written; the for-loop
+        on ``proc.stdout`` yields without blocking.  This is identical to the
+        pattern already used in ``detect_touch_device`` (``subprocess.run``).
 
         Args:
             command: Shell command to execute (e.g. ``"getevent -lt /dev/input/event3"``).
 
         Yields:
-            Raw bytes lines from the command output.
+            Raw bytes lines from the command output (including trailing newline).
         """
         self._ensure_device()
-        adb_socket = self._adb_device.shell(command, stream=True)
+        creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        proc = subprocess.Popen(
+            ["adb", "-s", self._serial, "shell", command],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            creationflags=creationflags,
+        )
         try:
-            buffer = b""
-            while True:
-                chunk = adb_socket.conn.recv(4096)
-                if not chunk:
-                    break
-                buffer += chunk
-                # yield complete lines
-                while b"\n" in buffer:
-                    line, buffer = buffer.split(b"\n", 1)
-                    yield line + b"\n"
-            # yield any remaining data
-            if buffer:
-                yield buffer
+            for line in proc.stdout:
+                yield line
         finally:
+            proc.terminate()
             try:
-                adb_socket.close()
-            except Exception:
-                pass
+                proc.wait(timeout=3.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                try:
+                    proc.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    pass  # last resort — process is unresponsive
 
     # ─── Lifecycle ────────────────────────────────────────────────────────────
 
