@@ -785,8 +785,6 @@ def test_validation_warning_set_when_mp4_invalid(tmp_path):
     """
     import time
 
-    from PySide6.QtCore import Qt
-
     from gameplay_recorder.capture.scrcpy_recorder import ScrcpyRecorder
 
     # Create an mp4 file with NO moov atom (just mdat-like bytes)

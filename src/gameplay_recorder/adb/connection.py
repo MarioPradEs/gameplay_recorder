@@ -310,8 +310,7 @@ class AdbConnection:
             creationflags=creationflags,
         )
         try:
-            for line in proc.stdout:
-                yield line
+            yield from proc.stdout
         finally:
             proc.terminate()
             try:

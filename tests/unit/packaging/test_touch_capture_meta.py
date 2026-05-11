@@ -15,8 +15,6 @@ import json
 import zipfile
 from pathlib import Path
 
-import pytest
-
 from gameplay_recorder.models.session import SessionMeta
 
 
@@ -134,6 +132,6 @@ class TestTouchCaptureField:
                 content = json.loads(zf.read("session_meta.json").decode("utf-8"))
 
             assert "touch_capture" in content, (
-                f"touch_capture missing from session_meta when escape_hatch_active={escape_hatch_active}"
+                f"touch_capture missing when escape_hatch_active={escape_hatch_active}"
             )
             assert content["touch_capture"] == expected

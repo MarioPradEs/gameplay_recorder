@@ -8,10 +8,7 @@ Spec: gameplay-recorder-shutdown-and-touch-fixes / Phase 2: mp4 validation
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from gameplay_recorder.capture.scrcpy_recorder import _validate_mp4
-
 
 # ---------------------------------------------------------------------------
 # Phase 2.1 — _validate_mp4 helper tests

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -22,6 +21,7 @@ def test_adb_path_returns_meipass_path_when_frozen(tmp_path):
         patch("sys.platform", "win32"),
     ):
         import importlib
+
         import gameplay_recorder.adb.paths as paths_mod
 
         importlib.reload(paths_mod)
@@ -65,6 +65,7 @@ def test_adb_path_raises_when_executable_missing(tmp_path):
         patch("sys.platform", "win32"),
     ):
         import importlib
+
         import gameplay_recorder.adb.paths as paths_mod
 
         importlib.reload(paths_mod)
@@ -88,6 +89,7 @@ def test_adb_path_uses_no_extension_on_non_windows(tmp_path):
         patch("sys.platform", "darwin"),
     ):
         import importlib
+
         import gameplay_recorder.adb.paths as paths_mod
 
         importlib.reload(paths_mod)

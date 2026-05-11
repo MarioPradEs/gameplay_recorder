@@ -128,7 +128,7 @@ def test_validation_warning_signal_connected_to_ui(qtbot, tmp_path, monkeypatch)
 
     with (
         patch("gameplay_recorder.ui.main_window.AdbConnection", spec=AdbConnection) as MockConn,
-        patch("gameplay_recorder.ui.main_window.ScrcpyRecorder", spec=True) as MockSR,
+        patch("gameplay_recorder.ui.main_window.ScrcpyRecorder", spec=True),
         patch("gameplay_recorder.ui.main_window.ScreenshotCapture", spec=True),
         patch("gameplay_recorder.ui.main_window.TouchEventMonitor", spec=True),
         patch("gameplay_recorder.ui.main_window.EventPersister", spec=True),

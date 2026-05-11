@@ -390,7 +390,7 @@ add device 2: /dev/input/event8
 
 class TestTouchEventMonitorRaisesOnNoDevice:
     def test_start_raises_when_detect_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """TouchEventMonitor.start() with no node and None detection raises TouchDeviceNotFoundError."""
+        """start() with no node and None detection raises TouchDeviceNotFoundError."""
         from gameplay_recorder.capture.event_monitor import TouchDeviceNotFoundError
 
         monkeypatch.setattr(
