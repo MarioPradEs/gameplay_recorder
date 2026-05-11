@@ -408,6 +408,10 @@ def test_run_emits_recording_finished_with_path_on_success():
         patch("gameplay_recorder.capture.scrcpy_recorder.os.kill", side_effect=_fake_os_kill),
         patch("pathlib.Path.exists", return_value=True),
         patch("pathlib.Path.stat") as mock_stat,
+        patch(
+            "gameplay_recorder.capture.scrcpy_recorder._validate_mp4",
+            return_value=(True, None),
+        ),
     ):
         mock_stat.return_value.st_size = 2048
         recorder.start()

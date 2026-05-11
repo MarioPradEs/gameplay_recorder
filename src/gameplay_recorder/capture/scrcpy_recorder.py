@@ -34,11 +34,49 @@ except ImportError:  # allow unit tests without a display
 # ---------------------------------------------------------------------------
 
 _TERMINATE_TIMEOUT_S: int = 5
+_MP4_REGION_SIZE: int = 128 * 1024  # bytes to scan at head / tail
 
 
 # ---------------------------------------------------------------------------
 # Pure helpers
 # ---------------------------------------------------------------------------
+
+
+def _validate_mp4(path: Path) -> tuple[bool, str | None]:
+    """Scan first/last 128 KB of an mp4 file for the moov atom signature.
+
+    Reads ONLY the head and tail regions — avoids loading hundreds of MB.
+
+    Returns:
+        (True, None)         — moov bytes found; file is likely playable.
+        (False, reason: str) — moov not found, file missing, or file empty.
+
+    Edge cases handled:
+        - File does not exist  → (False, "mp4 file missing")
+        - File is 0 bytes      → (False, "mp4 file empty")
+        - File < 256 KB        → scan whole file in one read (no two-region logic)
+    """
+    if not path.exists():
+        return (False, "mp4 file missing")
+    size = path.stat().st_size
+    if size == 0:
+        return (False, "mp4 file empty")
+    with open(path, "rb") as f:
+        if size <= _MP4_REGION_SIZE * 2:
+            # Small file: scan the whole thing once
+            data = f.read()
+            if b"moov" in data:
+                return (True, None)
+            return (False, "no moov atom found")
+        # Large file: scan head + tail independently
+        head = f.read(_MP4_REGION_SIZE)
+        if b"moov" in head:
+            return (True, None)
+        f.seek(-_MP4_REGION_SIZE, 2)  # 2 = SEEK_END
+        tail = f.read(_MP4_REGION_SIZE)
+        if b"moov" in tail:
+            return (True, None)
+    return (False, "no moov atom found")
 
 
 def _resolve_scrcpy() -> str:
@@ -147,6 +185,7 @@ class ScrcpyRecorder(QThread):
     recording_started = Signal()
     recording_finished = Signal(object)  # Path
     recording_error = Signal(str)
+    validation_warning = Signal(str)  # emitted when mp4 moov atom is missing
 
     def __init__(
         self,
@@ -158,6 +197,7 @@ class ScrcpyRecorder(QThread):
         self._serial = serial
         self._output_path = output_path
         self._aborted: bool = False
+        self._validation_warning: str | None = None
 
     # ── Graceful shutdown ────────────────────────────────────────────────────
 
@@ -233,6 +273,19 @@ class ScrcpyRecorder(QThread):
                 self._output_path,
                 self._output_path.stat().st_size,
             )
+
+            # Validate mp4 for moov atom — warns user but never blocks packaging
+            ok, reason = _validate_mp4(self._output_path)
+            if ok:
+                logger.info("ScrcpyRecorder: mp4 validation passed (moov atom present)")
+            else:
+                logger.warning(
+                    "ScrcpyRecorder: mp4 validation failed: %s — file may be unplayable",
+                    reason,
+                )
+                self._validation_warning = reason
+                self.validation_warning.emit(reason)
+
             self.recording_finished.emit(self._output_path)
 
         except Exception as exc:
