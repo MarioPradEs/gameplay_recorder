@@ -523,3 +523,211 @@ def test_check_host_free_space_falls_back_to_parent_dir_if_dir_missing():
         f"disk_usage must NOT be called with the nonexistent dir {nonexistent_dir!r}; "
         f"got {called_with[0]!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 1.1 — Graceful shutdown: spawn flags + time-limit (RED)
+# ---------------------------------------------------------------------------
+
+
+def test_spawn_uses_create_new_process_group_on_windows():
+    """_spawn_scrcpy() passes CREATE_NEW_PROCESS_GROUP in creationflags on Windows.
+
+    Spec: Windows spawn must use CREATE_NEW_PROCESS_GROUP so CTRL_BREAK_EVENT
+    can be delivered later. Without it, signal delivery fails silently.
+    """
+    import subprocess as _subprocess
+
+    from gameplay_recorder.capture.scrcpy_recorder import _spawn_scrcpy
+
+    with (
+        patch("gameplay_recorder.capture.scrcpy_recorder.sys") as mock_sys,
+        patch("gameplay_recorder.capture.scrcpy_recorder.subprocess.Popen") as mock_popen,
+    ):
+        mock_sys.platform = "win32"
+        mock_sys._MEIPASS = None
+        mock_popen.return_value = MagicMock(pid=12345)
+        _spawn_scrcpy("abc123", Path("/tmp/gameplay.mp4"))
+
+    kwargs = mock_popen.call_args[1]
+    assert "creationflags" in kwargs, "creationflags must be passed on Windows"
+    assert kwargs["creationflags"] & _subprocess.CREATE_NEW_PROCESS_GROUP, (
+        "CREATE_NEW_PROCESS_GROUP must be set in creationflags on Windows"
+    )
+
+
+def test_spawn_no_creationflags_on_non_windows():
+    """_spawn_scrcpy() does NOT pass creationflags on non-Windows platforms.
+
+    Spec: Linux/macOS use default Popen (no creationflags needed — SIGTERM works).
+    """
+    from gameplay_recorder.capture.scrcpy_recorder import _spawn_scrcpy
+
+    with (
+        patch("gameplay_recorder.capture.scrcpy_recorder.sys") as mock_sys,
+        patch("gameplay_recorder.capture.scrcpy_recorder.subprocess.Popen") as mock_popen,
+    ):
+        mock_sys.platform = "linux"
+        mock_sys._MEIPASS = None
+        mock_popen.return_value = MagicMock(pid=12345)
+        _spawn_scrcpy("abc123", Path("/tmp/gameplay.mp4"))
+
+    kwargs = mock_popen.call_args[1]
+    # Either creationflags is absent, or it is 0 (no flags set)
+    flag_value = kwargs.get("creationflags", 0)
+    assert flag_value == 0, f"creationflags must be absent or 0 on non-Windows, got {flag_value!r}"
+
+
+def test_spawn_includes_time_limit_7200():
+    """_spawn_scrcpy() includes --time-limit=7200 in the scrcpy command.
+
+    Spec: 2-hour safety cap so scrcpy self-finalizes the mp4 even if signal
+    delivery fails — ensures the moov atom is always written.
+    """
+    from gameplay_recorder.capture.scrcpy_recorder import _spawn_scrcpy
+
+    with patch("gameplay_recorder.capture.scrcpy_recorder.subprocess.Popen") as mock_popen:
+        mock_popen.return_value = MagicMock(pid=12345)
+        _spawn_scrcpy("abc123", Path("/tmp/gameplay.mp4"))
+
+    cmd = mock_popen.call_args[0][0]
+    cmd_str = " ".join(str(c) for c in cmd)
+    assert "time-limit" in cmd_str and "7200" in cmd_str, (
+        f"--time-limit=7200 (or --time-limit 7200) must appear in command: {cmd_str!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 1.1 — Graceful shutdown: _graceful_stop signal routing (RED)
+# ---------------------------------------------------------------------------
+
+
+def _make_recorder_with_mock_proc(mock_proc):
+    """Helper: build a ScrcpyRecorder whose _spawn_scrcpy returns mock_proc."""
+    from gameplay_recorder.capture.scrcpy_recorder import ScrcpyRecorder
+
+    recorder = ScrcpyRecorder(serial="abc123", output_path=Path("/tmp/gameplay.mp4"))
+    # Attach proc directly so we can call _graceful_stop without run()
+    recorder.proc = mock_proc
+    return recorder
+
+
+def test_graceful_stop_sends_ctrl_break_on_windows():
+    """_graceful_stop() sends os.kill(pid, CTRL_BREAK_EVENT) on Windows.
+
+    Spec: Windows stop signal must be CTRL_BREAK_EVENT — terminate() sends
+    TerminateProcess (hard kill) which prevents moov atom flush.
+    """
+    import signal as _signal
+
+    from gameplay_recorder.capture.scrcpy_recorder import ScrcpyRecorder
+
+    mock_proc = MagicMock()
+    mock_proc.pid = 42
+    mock_proc.wait.return_value = 0  # exits cleanly
+
+    recorder = ScrcpyRecorder(serial="abc123", output_path=Path("/tmp/gameplay.mp4"))
+
+    with (
+        patch("gameplay_recorder.capture.scrcpy_recorder.sys") as mock_sys,
+        patch("gameplay_recorder.capture.scrcpy_recorder.os.kill") as mock_kill,
+    ):
+        mock_sys.platform = "win32"
+        recorder._graceful_stop(mock_proc)
+
+    mock_kill.assert_called_once_with(42, _signal.CTRL_BREAK_EVENT)
+
+
+def test_graceful_stop_uses_terminate_on_linux():
+    """_graceful_stop() calls proc.terminate() on Linux (not os.kill).
+
+    Spec: SIGTERM via terminate() is the correct stop signal on Linux.
+    """
+    from gameplay_recorder.capture.scrcpy_recorder import ScrcpyRecorder
+
+    mock_proc = MagicMock()
+    mock_proc.pid = 42
+    mock_proc.wait.return_value = 0  # exits cleanly
+
+    recorder = ScrcpyRecorder(serial="abc123", output_path=Path("/tmp/gameplay.mp4"))
+
+    with (
+        patch("gameplay_recorder.capture.scrcpy_recorder.sys") as mock_sys,
+        patch("gameplay_recorder.capture.scrcpy_recorder.os.kill") as mock_kill,
+    ):
+        mock_sys.platform = "linux"
+        recorder._graceful_stop(mock_proc)
+
+    mock_proc.terminate.assert_called_once()
+    mock_kill.assert_not_called()
+
+
+def test_graceful_stop_uses_terminate_on_macos():
+    """_graceful_stop() calls proc.terminate() on macOS (not os.kill).
+
+    Spec: SIGTERM via terminate() is the correct stop signal on macOS.
+    """
+    from gameplay_recorder.capture.scrcpy_recorder import ScrcpyRecorder
+
+    mock_proc = MagicMock()
+    mock_proc.pid = 42
+    mock_proc.wait.return_value = 0  # exits cleanly
+
+    recorder = ScrcpyRecorder(serial="abc123", output_path=Path("/tmp/gameplay.mp4"))
+
+    with (
+        patch("gameplay_recorder.capture.scrcpy_recorder.sys") as mock_sys,
+        patch("gameplay_recorder.capture.scrcpy_recorder.os.kill") as mock_kill,
+    ):
+        mock_sys.platform = "darwin"
+        recorder._graceful_stop(mock_proc)
+
+    mock_proc.terminate.assert_called_once()
+    mock_kill.assert_not_called()
+
+
+def test_graceful_stop_escalates_to_kill_after_grace_period():
+    """_graceful_stop() calls proc.kill() and sets _aborted=True when proc.wait() times out.
+
+    Spec: 5s grace period; if exceeded → hard kill + _aborted flag for downstream
+    validation routing (Phase 2).
+    """
+    from gameplay_recorder.capture.scrcpy_recorder import ScrcpyRecorder
+
+    mock_proc = MagicMock()
+    mock_proc.pid = 42
+    mock_proc.wait.side_effect = subprocess.TimeoutExpired("scrcpy", 5)
+
+    recorder = ScrcpyRecorder(serial="abc123", output_path=Path("/tmp/gameplay.mp4"))
+
+    with patch("gameplay_recorder.capture.scrcpy_recorder.sys") as mock_sys:
+        mock_sys.platform = "linux"
+        recorder._graceful_stop(mock_proc)
+
+    mock_proc.kill.assert_called_once()
+    assert recorder._aborted is True, (
+        "_aborted must be True after grace period exceeded — signals corrupt mp4 risk"
+    )
+
+
+def test_graceful_stop_no_kill_when_proc_exits_cleanly():
+    """_graceful_stop() does NOT call proc.kill() when proc exits within grace period.
+
+    Spec: Normal stop — proc exits within 5s, no hard kill, _aborted stays False.
+    """
+    from gameplay_recorder.capture.scrcpy_recorder import ScrcpyRecorder
+
+    mock_proc = MagicMock()
+    mock_proc.pid = 42
+    mock_proc.wait.return_value = 0  # exits cleanly within grace
+
+    recorder = ScrcpyRecorder(serial="abc123", output_path=Path("/tmp/gameplay.mp4"))
+
+    with patch("gameplay_recorder.capture.scrcpy_recorder.sys") as mock_sys:
+        mock_sys.platform = "linux"
+        recorder._graceful_stop(mock_proc)
+
+    mock_proc.kill.assert_not_called()
+    assert recorder._aborted is False, (
+        "_aborted must remain False when proc exits cleanly within grace period"
+    )
